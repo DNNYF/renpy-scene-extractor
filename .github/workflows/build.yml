@@ -68,13 +68,14 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
           files: ./dist/**/*.exe
           draft: false
           prerelease: false
           generate_release_notes: true
-          name: "RenPy Scene Extractor ${{ github.ref_name }}"
+          name: "RenPy Scene Extractor ${{ github.ref_name == 'main' && 'latest' || github.ref_name }}"
           body: |
-            ## 🎬 RenPy Scene Extractor ${{ github.ref_name }}
+            ## 🎬 RenPy Scene Extractor ${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
 
             ### 📥 Download
             Download the **Windows installer** (.exe) from the assets below.
@@ -107,7 +108,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           repository: DNNYF/renpy-scene-extractor-releases
-          tag_name: ${{ github.ref_name }}
-          name: "RenPy Scene Extractor ${{ github.ref_name }}"
+          tag_name: ${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
+          name: "RenPy Scene Extractor ${{ github.ref_name == 'main' && 'latest' || github.ref_name }}"
           files: ./dist/**/*.exe
           token: ${{ secrets.PUBLIC_REPO_TOKEN }}
