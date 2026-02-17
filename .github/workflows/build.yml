@@ -67,24 +67,27 @@ jobs:
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
           files: ./dist/**/*.exe
           draft: false
           prerelease: false
           generate_release_notes: true
-          name: "RenPy Scene Extractor ${{ github.ref_name == 'main' && 'latest' || github.ref_name }}"
+          make_latest: true
+          name: "RenPy Scene Extractor ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}"
           body: |
-            ## 🎬 RenPy Scene Extractor ${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
+            ### RenPy Scene Extractor ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
 
-            ### 📥 Download
+            ### Download
             Download the **Windows installer** (.exe) from the assets below.
 
-            ### ⚙️ Requirements
+            ### Requirements
             - Windows 10/11 (64-bit)
             - [Python 3.8+](https://www.python.org/downloads/) installed and added to PATH
 
-            ### 🛠️ Installation
+            ### Installation
             1. Download the `.exe` installer below
             2. Run the installer and follow the prompts
             3. Make sure Python is installed on your system
@@ -108,7 +111,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           repository: DNNYF/renpy-scene-extractor-releases
-          tag_name: ${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
-          name: "RenPy Scene Extractor ${{ github.ref_name == 'main' && 'latest' || github.ref_name }}"
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+          name: "RenPy Scene Extractor ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}"
           files: ./dist/**/*.exe
+          make_latest: true
           token: ${{ secrets.PUBLIC_REPO_TOKEN }}
