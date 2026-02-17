@@ -1,0 +1,111 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app
+        run: npm run build
+
+      - name: Build Windows installer
+        run: npx electron-builder --win --publish never
+
+      - name: List build output
+        run: dir release\1.0.0\ 2>nul || dir release\ /s
+        shell: cmd
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: release/**/*.exe
+          if-no-files-found: error
+
+  release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: ./dist
+
+      - name: List files
+        run: find ./dist -type f
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./dist/**/*.exe
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          name: "RenPy Scene Extractor ${{ github.ref_name }}"
+          body: |
+            ## 🎬 RenPy Scene Extractor ${{ github.ref_name }}
+
+            ### 📥 Download
+            Download the **Windows installer** (.exe) from the assets below.
+
+            ### ⚙️ Requirements
+            - Windows 10/11 (64-bit)
+            - [Python 3.8+](https://www.python.org/downloads/) installed and added to PATH
+
+            ### 🛠️ Installation
+            1. Download the `.exe` installer below
+            2. Run the installer and follow the prompts
+            3. Make sure Python is installed on your system
+            4. Launch the app and select a Ren'Py game folder
+
+  # Optional: publish .exe to a separate PUBLIC repo
+  # Uncomment and configure if you want the .exe on a public repo
+  
+  publish-public:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: ./dist
+  
+      - name: Publish to public repo
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: DNNYF/renpy-scene-extractor-releases
+          tag_name: ${{ github.ref_name }}
+          name: "RenPy Scene Extractor ${{ github.ref_name }}"
+          files: ./dist/**/*.exe
+          token: ${{ secrets.PUBLIC_REPO_TOKEN }}
