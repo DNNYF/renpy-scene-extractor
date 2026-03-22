@@ -12,6 +12,16 @@ This project is provided for **legitimate use only** (e.g., your own projects, p
 
 ---
 
+## Screenshots
+
+### Main Interface
+![Main Interface](img/main.png)
+
+### Timeline Editor
+![Timeline Editor](img/scene_editor.png)
+
+---
+
 ## For Users (Normal Use)
 
 ### Requirements
@@ -23,7 +33,7 @@ This project is provided for **legitimate use only** (e.g., your own projects, p
 2. Run the installer.
 3. Open the app and select a Ren'Py game folder.
 
-### Option B — No Install (Run Dev Only / Portable-ish)
+### Option B — No Install (Run Dev Only / No Installer)
 If you **don’t want to install** the app, you can run it directly from source in **development mode** (see **Developer Setup** below).  
 This runs the app without creating an installer.
 
@@ -46,15 +56,13 @@ npm ci
 ```
 
 ### Run in Dev Mode (No Installer)
-This is the easiest way to use the app **without installing** anything system-wide.
-
 ```bash
 npm run dev
 ```
 
 > Notes:
-> - The Electron window is started by the Vite/Electron dev setup.
-> - Python is invoked via `python` command. If your system uses `py` instead, you may need to adjust the Electron spawn command.
+> - Python is invoked via the `python` command.
+> - If your system uses `py` instead of `python`, you may need to adjust the Electron spawn command.
 
 ### Build (Web + Electron dist files)
 ```bash
