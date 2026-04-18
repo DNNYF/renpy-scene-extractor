@@ -31,6 +31,19 @@
         "!**/*.whl",
         "!**/*.zip"
       ]
+    },
+    {
+      "from": "vendor/ffmpeg",
+      "to": "ffmpeg",
+      "filter": [
+        "bin/**/*",
+        "!**/*.pdb",
+        "!**/*.lib",
+        "!**/*.exp",
+        "!**/*.ilk",
+        "!**/doc/**/*",
+        "!**/presets/**/*"
+      ]
     }
   ],
   "mac": {

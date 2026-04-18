@@ -482,10 +482,10 @@ def _run_subprocess(command, error_prefix):
 
 
 def _ensure_ffmpeg_available():
-    ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_path = os.environ.get("FFMPEG_PATH") or shutil.which("ffmpeg")
     if not ffmpeg_path:
         raise RuntimeError(
-            "FFmpeg was not found in PATH. Install ffmpeg and make sure ffmpeg.exe is available from the command line."
+            "FFmpeg was not found. Bundled ffmpeg was missing and ffmpeg was not available in PATH."
         )
     return ffmpeg_path
 

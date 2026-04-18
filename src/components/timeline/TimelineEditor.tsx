@@ -80,7 +80,6 @@ function isTimelineMediaType(value: string | undefined): value is TimelineClip['
 
 const DEFAULT_IMG_DURATION = 5 // seconds
 const MIN_CLIP_DURATION = 0.1
-const CLIP_MOVE_STEP = 0.25
 const MIN_ZOOM = 10  // px per second
 const MAX_ZOOM = 200
 
@@ -184,6 +183,36 @@ function duplicateClipOnTrack(track: Track, clipId: string): { track: Track; dup
     }
 }
 
+function reorderClipOnTrack(track: Track, clipId: string, direction: -1 | 1): Track {
+    const sortedClips = [...track.clips].sort((a, b) => a.startTime - b.startTime)
+    const clipIndex = sortedClips.findIndex((clip) => clip.id === clipId)
+    const targetIndex = clipIndex + direction
+
+    if (clipIndex === -1 || targetIndex < 0 || targetIndex >= sortedClips.length) {
+        return track
+    }
+
+    const reorderedClips = [...sortedClips]
+    const [movedClip] = reorderedClips.splice(clipIndex, 1)
+    reorderedClips.splice(targetIndex, 0, movedClip)
+
+    const gaps = sortedClips.slice(1).map((clip, index) => Math.max(0, clip.startTime - getClipEnd(sortedClips[index])))
+    const firstStart = sortedClips[0]?.startTime ?? 0
+    let cursor = firstStart
+
+    return {
+        ...track,
+        clips: reorderedClips.map((clip, index) => {
+            const nextClip = {
+                ...clip,
+                startTime: index === 0 ? firstStart : cursor + gaps[index - 1],
+            }
+            cursor = getClipEnd(nextClip)
+            return nextClip
+        }),
+    }
+}
+
 /* ===================================================
    TimelineEditor — Main Container
    =================================================== */
@@ -225,6 +254,8 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
     const [durationDraft, setDurationDraft] = useState('')
     const [trimStartDraft, setTrimStartDraft] = useState('')
     const [startTimeDraft, setStartTimeDraft] = useState('')
+    const [previewHeight, setPreviewHeight] = useState(208)
+    const [selectedClipCollapsed, setSelectedClipCollapsed] = useState(false)
 
     // Refs
     const timelineScrollerRef = useRef<HTMLDivElement>(null)
@@ -376,16 +407,19 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
         updateClipInTrack(clipId, currentClip => ({ ...currentClip, startTime: newStart }))
     }, [getClipNeighborBounds, getTrackForClip, updateClipInTrack])
 
-    const moveSelectedClipBy = useCallback((direction: -1 | 1) => {
+    const reorderSelectedClip = useCallback((direction: -1 | 1) => {
         if (!selectedClipId) return
 
-        const located = getTrackForClip(selectedClipId)
-        if (!located) return
+        setTracks(prev => prev.map((track) => {
+            if (!track.clips.some((clip) => clip.id === selectedClipId)) {
+                return track
+            }
 
-        updateClipStartTime(selectedClipId, located.clip.startTime + (direction * CLIP_MOVE_STEP))
-    }, [getTrackForClip, selectedClipId, updateClipStartTime])
+            return reorderClipOnTrack(track, selectedClipId, direction)
+        }))
+    }, [selectedClipId])
 
-    const selectedClipMoveState = useMemo(() => {
+    const selectedClipReorderState = useMemo(() => {
         if (!selectedClipId) {
             return {
                 canMoveEarlier: false,
@@ -401,20 +435,14 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
             }
         }
 
-        const { track, clip } = located
-        const { prevEnd, nextStart } = getClipNeighborBounds(track, clip.id)
-        const effectiveDuration = getEffectiveDuration(clip)
-        const maxStart = Number.isFinite(nextStart)
-            ? Math.max(prevEnd, nextStart - effectiveDuration)
-            : Infinity
+        const sortedClips = [...located.track.clips].sort((a, b) => a.startTime - b.startTime)
+        const clipIndex = sortedClips.findIndex((clip) => clip.id === selectedClipId)
 
         return {
-            canMoveEarlier: clip.startTime > prevEnd + 0.001,
-            canMoveLater: Number.isFinite(maxStart)
-                ? clip.startTime < maxStart - 0.001
-                : true,
+            canMoveEarlier: clipIndex > 0,
+            canMoveLater: clipIndex !== -1 && clipIndex < sortedClips.length - 1,
         }
-    }, [getClipNeighborBounds, getTrackForClip, selectedClipId])
+    }, [getTrackForClip, selectedClipId])
 
     const handleExport = useCallback(async () => {
         if (!onExport || isExporting) return
@@ -758,6 +786,30 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
         document.body.style.userSelect = 'none'
     }, [getTimelineTimeFromClientX, seekToTime, stopPlayback])
 
+    const handlePreviewResizeStart = useCallback((e: React.MouseEvent) => {
+        e.preventDefault()
+
+        const startY = e.clientY
+        const startHeight = previewHeight
+
+        const onMove = (event: MouseEvent) => {
+            const delta = event.clientY - startY
+            setPreviewHeight(clamp(startHeight + delta, 120, 360))
+        }
+
+        const onUp = () => {
+            document.removeEventListener('mousemove', onMove)
+            document.removeEventListener('mouseup', onUp)
+            document.body.style.cursor = ''
+            document.body.style.userSelect = ''
+        }
+
+        document.addEventListener('mousemove', onMove)
+        document.addEventListener('mouseup', onUp)
+        document.body.style.cursor = 'row-resize'
+        document.body.style.userSelect = 'none'
+    }, [previewHeight])
+
     // --- Clip drag (reposition) ---
     const handleClipDragStart = useCallback((clipId: string, e: React.MouseEvent) => {
         e.stopPropagation()
@@ -959,13 +1011,13 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
 
             if (selectedClipId && e.altKey && e.key === 'ArrowLeft') {
                 e.preventDefault()
-                moveSelectedClipBy(-1)
+                reorderSelectedClip(-1)
                 return
             }
 
             if (selectedClipId && e.altKey && e.key === 'ArrowRight') {
                 e.preventDefault()
-                moveSelectedClipBy(1)
+                reorderSelectedClip(1)
                 return
             }
 
@@ -976,7 +1028,7 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
-    }, [togglePlayback, selectedClipId, deleteClip, splitClipAtPlayhead, duplicateSelectedClip, moveSelectedClipBy])
+    }, [togglePlayback, selectedClipId, deleteClip, splitClipAtPlayhead, duplicateSelectedClip, reorderSelectedClip])
 
     // --- Render ---
     return (
@@ -1056,24 +1108,35 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
             </div>
             {exportMessage && <div className="timeline-export-status">{exportMessage}</div>}
 
-            <div className="timeline-inspector">
+            <div className={`timeline-inspector ${selectedClipCollapsed ? 'is-collapsed' : ''}`}>
                 <div className="inspector-header">
                     <div>
                         <p className="inspector-eyebrow">Selected clip</p>
                         <h2>{selectedClip ? getFileName(selectedClip.fileName) : 'No clip selected'}</h2>
                     </div>
-                    {selectedClip && (
-                        <div className="inspector-badges">
-                            <span className={`inspector-badge badge-${selectedClip.fileType}`}>{selectedClip.fileType}</span>
-                            <span className="inspector-badge">Length {formatTime(getEffectiveDuration(selectedClip))}</span>
-                            {selectedClip.fileType !== 'image' && getSourceDuration(selectedClip) !== undefined && (
-                                <span className="inspector-badge">Source {formatTime(getSourceDuration(selectedClip) || 0)}</span>
-                            )}
-                        </div>
-                    )}
+                    <div className="inspector-header-actions">
+                        {selectedClip && (
+                            <div className="inspector-badges">
+                                <span className={`inspector-badge badge-${selectedClip.fileType}`}>{selectedClip.fileType}</span>
+                                <span className="inspector-badge">Length {formatTime(getEffectiveDuration(selectedClip))}</span>
+                                {selectedClip.fileType !== 'image' && getSourceDuration(selectedClip) !== undefined && (
+                                    <span className="inspector-badge">Source {formatTime(getSourceDuration(selectedClip) || 0)}</span>
+                                )}
+                            </div>
+                        )}
+                        <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => setSelectedClipCollapsed((prev) => !prev)}
+                            aria-expanded={!selectedClipCollapsed}
+                            title={selectedClipCollapsed ? 'Expand selected clip fields' : 'Collapse selected clip fields'}
+                        >
+                            {selectedClipCollapsed ? '▾ Expand' : '▴ Collapse'}
+                        </button>
+                    </div>
                 </div>
 
-                {selectedClip ? (
+                {!selectedClipCollapsed && (selectedClip ? (
                     <>
                     <div className="inspector-grid">
                         <label className="timeline-field">
@@ -1149,67 +1212,90 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                             </div>
                         </div>
                     </div>
-
-                    <div className="timeline-move-controls">
-                        <span className="timeline-field-label">Move clip</span>
-                        <div className="timeline-move-buttons">
-                            <button
-                                className="btn btn-secondary btn-sm"
-                                onClick={() => moveSelectedClipBy(-1)}
-                                disabled={!selectedClipMoveState.canMoveEarlier}
-                                title="Move selected clip earlier by 0.25s (Alt+←)"
-                            >
-                                ← Earlier
-                            </button>
-                            <button
-                                className="btn btn-secondary btn-sm"
-                                onClick={() => moveSelectedClipBy(1)}
-                                disabled={!selectedClipMoveState.canMoveLater}
-                                title="Move selected clip later by 0.25s (Alt+→)"
-                            >
-                                Later →
-                            </button>
-                        </div>
-                        <span className="timeline-move-hint">Moves in 0.25s steps and respects the existing collision limits.</span>
-                    </div>
                     </>
                 ) : (
                     <p className="inspector-empty">Pick a clip to edit its start, trim, and duration with exact values.</p>
-                )}
+                ))}
             </div>
 
-            {/* Preview Player */}
-            <div className="timeline-preview">
-                <div className="preview-viewport">
-                    {activeVideoClip ? (
-                        activeVideoClip.fileType === 'image' ? (
-                            <img
-                                src={buildLocalFileUrl(activeVideoClip.filePath)}
-                                alt={activeVideoClip.fileName}
-                                className="timeline-preview-media"
-                            />
-                        ) : (
-                            <video
-                                ref={videoRef}
-                                src={buildLocalFileUrl(activeVideoClip.filePath)}
-                                className="timeline-preview-media"
-                                muted={!!activeAudioClip}
-                            />
-                        )
-                    ) : (
-                        <div className="preview-empty-state">
-                            <span className="empty-icon-large">🎬</span>
-                            <p>Move playhead over a clip to preview</p>
+            <div className="timeline-workspace">
+                <section className="timeline-preview-shell" style={{ height: previewHeight }}>
+                    <div className="timeline-preview-header">
+                        <div>
+                            <p className="timeline-preview-eyebrow">Program monitor</p>
+                            <h3 className="timeline-preview-title">
+                                {activeVideoClip ? getFileName(activeVideoClip.fileName) : 'Timeline Preview'}
+                            </h3>
                         </div>
-                    )}
-                </div>
+                        <div className="timeline-preview-toolbar">
+                            <div className="timeline-move-controls">
+                                <span className="timeline-field-label">Track order</span>
+                                <div className="timeline-move-buttons">
+                                    <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={() => reorderSelectedClip(-1)}
+                                        disabled={!selectedClipReorderState.canMoveEarlier}
+                                        title="Swap selected clip earlier in track order (Alt+←)"
+                                    >
+                                        ← Earlier
+                                    </button>
+                                    <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={() => reorderSelectedClip(1)}
+                                        disabled={!selectedClipReorderState.canMoveLater}
+                                        title="Swap selected clip later in track order (Alt+→)"
+                                    >
+                                        Later →
+                                    </button>
+                                </div>
+                            </div>
+                            <span className="timeline-preview-hint">Drag the divider below to resize</span>
+                        </div>
+                    </div>
+
+                    <div className="timeline-preview">
+                        <div className="preview-viewport">
+                            {activeVideoClip ? (
+                                activeVideoClip.fileType === 'image' ? (
+                                    <img
+                                        src={buildLocalFileUrl(activeVideoClip.filePath)}
+                                        alt={activeVideoClip.fileName}
+                                        className="timeline-preview-media"
+                                    />
+                                ) : (
+                                    <video
+                                        ref={videoRef}
+                                        src={buildLocalFileUrl(activeVideoClip.filePath)}
+                                        className="timeline-preview-media"
+                                        muted={!!activeAudioClip}
+                                    />
+                                )
+                            ) : (
+                                <div className="preview-empty-state">
+                                    <span className="empty-icon-large">🎬</span>
+                                    <p>Move playhead over a clip to preview</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </section>
+
                 {activeAudioClip && (
                     <audio ref={audioRef} src={buildLocalFileUrl(activeAudioClip.filePath)} />
                 )}
-            </div>
 
-            {/* Timeline Tracks */}
-            <div className="timeline-tracks-container" ref={timelineScrollerRef}>
+                <div
+                    className="timeline-preview-resize-handle"
+                    onMouseDown={handlePreviewResizeStart}
+                    role="separator"
+                    aria-orientation="horizontal"
+                    aria-label="Resize timeline preview"
+                >
+                    <div className="timeline-preview-resize-line" />
+                </div>
+
+                {/* Timeline Tracks */}
+                <div className="timeline-tracks-container" ref={timelineScrollerRef}>
                 {/* Time ruler */}
                 <div
                     className="timeline-ruler"
@@ -1302,6 +1388,7 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                         <div className="playhead-line" />
                     </div>
                 </div>
+                </div>
             </div>
 
             {/* Status Bar */}
@@ -1312,7 +1399,7 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                 {selectedClip && <span>Selected: {getFileName(selectedClip.fileName)}</span>}
                 {selectedClip && <span>Length: {formatTime(getEffectiveDuration(selectedClip))}</span>}
                 <span className="timeline-shortcuts-hint">
-                    Space: Play/Pause · S: Split · D: Duplicate · Alt+←/→: Move · Del: Delete
+                    Space: Play/Pause · S: Split · D: Duplicate · Alt+←/→: Reorder · Del: Delete
                 </span>
             </div>
         </div>

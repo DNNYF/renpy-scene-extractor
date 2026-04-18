@@ -1,4 +1,4 @@
-import { FC, useRef, useEffect, useState } from 'react'
+import { ChangeEvent, FC, useCallback, useEffect, useRef, useState } from 'react'
 import { buildLocalFileUrl } from './timeline/mediaUtils'
 
 interface VideoPreviewProps {
@@ -22,6 +22,23 @@ interface VideoPreviewProps {
     navigationTarget: 'files' | 'queue'
     onEnded?: () => void
     triggerReplay?: number
+}
+
+function formatPlaybackTime(seconds: number): string {
+    if (!Number.isFinite(seconds) || seconds < 0) {
+        return '0:00'
+    }
+
+    const wholeSeconds = Math.floor(seconds)
+    const hours = Math.floor(wholeSeconds / 3600)
+    const minutes = Math.floor((wholeSeconds % 3600) / 60)
+    const remainingSeconds = wholeSeconds % 60
+
+    if (hours > 0) {
+        return `${hours}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`
+    }
+
+    return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`
 }
 
 export const VideoPreview: FC<VideoPreviewProps> = ({
@@ -48,44 +65,179 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
 }) => {
     const videoRef = useRef<HTMLVideoElement>(null)
     const audioRef = useRef<HTMLAudioElement>(null)
+    const playerShellRef = useRef<HTMLDivElement>(null)
+
     const [error, setError] = useState(false)
+    const [isPlaying, setIsPlaying] = useState(false)
+    const [currentTime, setCurrentTime] = useState(0)
+    const [duration, setDuration] = useState(0)
+    const [volume, setVolume] = useState(1)
+    const [isMuted, setIsMuted] = useState(false)
+    const [isFullscreen, setIsFullscreen] = useState(false)
+
     const navigationLabel = navigationTarget === 'queue' && queueLength > 0 ? 'Queue' : 'Files'
     const previewSourceLabel = previewSource === 'queue' ? 'Queue item' : 'File selection'
     const fileLabel = fileName ? fileName.split('/').pop() : ''
+    const isPlayableMedia = fileType === 'video' || fileType === 'audio'
+
+    const getMediaElement = useCallback((): HTMLMediaElement | null => {
+        if (fileType === 'video') {
+            return videoRef.current
+        }
+
+        if (fileType === 'audio') {
+            return audioRef.current
+        }
+
+        return null
+    }, [fileType])
+
+    const syncMediaState = useCallback((mediaElement: HTMLMediaElement | null) => {
+        if (!mediaElement) {
+            setIsPlaying(false)
+            setCurrentTime(0)
+            setDuration(0)
+            return
+        }
+
+        setIsPlaying(!mediaElement.paused && !mediaElement.ended)
+        setCurrentTime(mediaElement.currentTime || 0)
+        setDuration(Number.isFinite(mediaElement.duration) ? mediaElement.duration : 0)
+        setVolume(mediaElement.volume)
+        setIsMuted(mediaElement.muted)
+    }, [])
 
     useEffect(() => {
         setError(false)
-        if (videoRef.current) {
-            videoRef.current.load()
-        }
-        if (audioRef.current) {
-            audioRef.current.load()
-        }
-    }, [filePath])
+        setCurrentTime(0)
+        setDuration(0)
 
-    // Replay trigger
+        const mediaElement = getMediaElement()
+        if (!mediaElement) {
+            setIsPlaying(false)
+            return
+        }
+
+        mediaElement.load()
+        syncMediaState(mediaElement)
+    }, [filePath, fileType, getMediaElement, syncMediaState])
+
     useEffect(() => {
-        if (triggerReplay && triggerReplay > 0) {
-            if (videoRef.current) {
-                videoRef.current.currentTime = 0
-                videoRef.current.play().catch(console.error)
-            }
-            if (audioRef.current) {
-                audioRef.current.currentTime = 0
-                audioRef.current.play().catch(console.error)
-            }
+        const mediaElement = getMediaElement()
+        if (!mediaElement) {
+            return
         }
-    }, [triggerReplay])
 
-    const handleEnded = () => {
-        if (autoPlayNext) {
-            if (onEnded) {
-                onEnded()
-            } else {
-                onNext()
-            }
+        mediaElement.volume = volume
+        mediaElement.muted = isMuted
+    }, [getMediaElement, isMuted, volume])
+
+    useEffect(() => {
+        if (!triggerReplay || triggerReplay <= 0) {
+            return
         }
-    }
+
+        const mediaElement = getMediaElement()
+        if (!mediaElement) {
+            return
+        }
+
+        mediaElement.currentTime = 0
+        mediaElement.play().catch(console.error)
+    }, [getMediaElement, triggerReplay])
+
+    useEffect(() => {
+        const handleFullscreenChange = () => {
+            const shell = playerShellRef.current
+            const fullscreenElement = document.fullscreenElement
+            setIsFullscreen(Boolean(shell && fullscreenElement && (shell === fullscreenElement || shell.contains(fullscreenElement))))
+        }
+
+        document.addEventListener('fullscreenchange', handleFullscreenChange)
+        return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+    }, [])
+
+    const handleEnded = useCallback(() => {
+        setIsPlaying(false)
+
+        if (!autoPlayNext) {
+            return
+        }
+
+        if (onEnded) {
+            onEnded()
+            return
+        }
+
+        onNext()
+    }, [autoPlayNext, onEnded, onNext])
+
+    const togglePlayback = useCallback(() => {
+        const mediaElement = getMediaElement()
+        if (!mediaElement) {
+            return
+        }
+
+        if (mediaElement.paused || mediaElement.ended) {
+            mediaElement.play().catch(console.error)
+            return
+        }
+
+        mediaElement.pause()
+    }, [getMediaElement])
+
+    const handleSeek = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+        const mediaElement = getMediaElement()
+        if (!mediaElement) {
+            return
+        }
+
+        const nextTime = Number(event.target.value)
+        mediaElement.currentTime = nextTime
+        setCurrentTime(nextTime)
+    }, [getMediaElement])
+
+    const handleVolumeChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+        const mediaElement = getMediaElement()
+        const nextVolume = Number(event.target.value)
+
+        setVolume(nextVolume)
+
+        if (!mediaElement) {
+            return
+        }
+
+        mediaElement.volume = nextVolume
+        mediaElement.muted = nextVolume === 0
+        setIsMuted(mediaElement.muted)
+    }, [getMediaElement])
+
+    const toggleMute = useCallback(() => {
+        const mediaElement = getMediaElement()
+        if (!mediaElement) {
+            return
+        }
+
+        mediaElement.muted = !mediaElement.muted
+        setIsMuted(mediaElement.muted)
+    }, [getMediaElement])
+
+    const toggleFullscreen = useCallback(async () => {
+        const playerShell = playerShellRef.current
+        if (!playerShell) {
+            return
+        }
+
+        try {
+            if (document.fullscreenElement) {
+                await document.exitFullscreen()
+            } else {
+                await playerShell.requestFullscreen()
+            }
+        } catch (fullscreenError) {
+            console.error('Failed to toggle fullscreen', fullscreenError)
+        }
+    }, [])
 
     const renderToolbar = () => (
         <div className="preview-toolbar">
@@ -179,8 +331,17 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
                 <video
                     ref={videoRef}
                     className="preview-video"
-                    controls
                     autoPlay
+                    playsInline
+                    onLoadedMetadata={(event) => syncMediaState(event.currentTarget)}
+                    onDurationChange={(event) => syncMediaState(event.currentTarget)}
+                    onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                    onPlay={() => setIsPlaying(true)}
+                    onPause={() => setIsPlaying(false)}
+                    onVolumeChange={(event) => {
+                        setVolume(event.currentTarget.volume)
+                        setIsMuted(event.currentTarget.muted)
+                    }}
                     onEnded={handleEnded}
                     onError={() => setError(true)}
                 >
@@ -189,6 +350,7 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
                 </video>
             )
         }
+
         if (fileType === 'image') {
             return (
                 <img
@@ -199,16 +361,29 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
                 />
             )
         }
+
         if (fileType === 'audio') {
             return (
                 <div className="audio-player-wrapper">
                     <div className="audio-visual">
                         <span className="audio-icon">🎵</span>
                     </div>
+                    <div className="audio-player-copy">
+                        <span className="audio-player-title">Audio preview</span>
+                        <span className="audio-player-caption">Custom transport stays visible while queue scenes advance.</span>
+                    </div>
                     <audio
                         ref={audioRef}
-                        controls
                         autoPlay
+                        onLoadedMetadata={(event) => syncMediaState(event.currentTarget)}
+                        onDurationChange={(event) => syncMediaState(event.currentTarget)}
+                        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                        onPlay={() => setIsPlaying(true)}
+                        onPause={() => setIsPlaying(false)}
+                        onVolumeChange={(event) => {
+                            setVolume(event.currentTarget.volume)
+                            setIsMuted(event.currentTarget.muted)
+                        }}
                         onEnded={handleEnded}
                         onError={() => setError(true)}
                     >
@@ -217,6 +392,7 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
                 </div>
             )
         }
+
         return (
             <div className="preview-unsupported">
                 <span className="empty-icon-large">📄</span>
@@ -230,16 +406,118 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
             {renderToolbar()}
 
             <div className="preview-content">
-                <div className={`media-container type-${fileType}`}>
-                    {renderMedia()}
+                <div className={`media-container type-${fileType}`} ref={playerShellRef}>
+                    <button
+                        type="button"
+                        className="player-nav-zone is-prev"
+                        onClick={onPrev}
+                        title="Previous scene"
+                        aria-label="Go to previous scene"
+                    >
+                        <span className="player-nav-zone-label">← Prev</span>
+                    </button>
 
-                    {error && (
-                        <div className="preview-error">
-                            <span>⚠️</span>
-                            <p>Error loading media</p>
-                            <code>{currentPath}</code>
+                    <div className={`player-media-frame ${isFullscreen ? 'is-fullscreen' : ''}`}>
+                        {renderMedia()}
+
+                        {isPlayableMedia && !error && (
+                            <button
+                                type="button"
+                                className={`player-center-control ${isPlaying ? 'is-playing' : ''}`}
+                                onClick={togglePlayback}
+                                aria-label={isPlaying ? 'Pause preview playback' : 'Play preview playback'}
+                                title={isPlaying ? 'Pause' : 'Play'}
+                            >
+                                {isPlaying ? '⏸' : '▶'}
+                            </button>
+                        )}
+
+                        {error && (
+                            <div className="preview-error">
+                                <span>⚠️</span>
+                                <p>Error loading media</p>
+                                <code>{currentPath}</code>
+                            </div>
+                        )}
+                    </div>
+
+                    <button
+                        type="button"
+                        className="player-nav-zone is-next"
+                        onClick={onNext}
+                        title="Next scene"
+                        aria-label="Go to next scene"
+                    >
+                        <span className="player-nav-zone-label">Next →</span>
+                    </button>
+
+                    <div className="player-control-bar">
+                        <div className="player-primary-controls">
+                            {isPlayableMedia ? (
+                                <button
+                                    type="button"
+                                    className="player-control-btn"
+                                    onClick={togglePlayback}
+                                    title={isPlaying ? 'Pause preview' : 'Play preview'}
+                                >
+                                    {isPlaying ? '⏸ Pause' : '▶ Play'}
+                                </button>
+                            ) : (
+                                <span className="player-static-label">Image preview</span>
+                            )}
+
+                            <button
+                                type="button"
+                                className="player-control-btn is-secondary"
+                                onClick={toggleFullscreen}
+                                title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                            >
+                                {isFullscreen ? '🡼 Window' : '⛶ Fullscreen'}
+                            </button>
                         </div>
-                    )}
+
+                        {isPlayableMedia ? (
+                            <>
+                                <div className="player-timeline-control">
+                                    <span className="player-timecode">{formatPlaybackTime(currentTime)}</span>
+                                    <input
+                                        type="range"
+                                        className="player-seek-slider"
+                                        min={0}
+                                        max={Math.max(duration, 0.01)}
+                                        step={0.05}
+                                        value={Math.min(currentTime, Math.max(duration, 0.01))}
+                                        onChange={handleSeek}
+                                        aria-label="Seek preview playback"
+                                    />
+                                    <span className="player-timecode">{formatPlaybackTime(duration)}</span>
+                                </div>
+
+                                <div className="player-volume-control">
+                                    <button
+                                        type="button"
+                                        className="player-control-btn is-secondary"
+                                        onClick={toggleMute}
+                                        title={isMuted || volume === 0 ? 'Unmute preview' : 'Mute preview'}
+                                    >
+                                        {isMuted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}
+                                    </button>
+                                    <input
+                                        type="range"
+                                        className="player-volume-slider"
+                                        min={0}
+                                        max={1}
+                                        step={0.05}
+                                        value={isMuted ? 0 : volume}
+                                        onChange={handleVolumeChange}
+                                        aria-label="Preview volume"
+                                    />
+                                </div>
+                            </>
+                        ) : (
+                            <div className="player-static-spacer" />
+                        )}
+                    </div>
                 </div>
             </div>
 

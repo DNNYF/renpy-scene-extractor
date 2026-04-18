@@ -23,6 +23,19 @@ let pythonProcess: ChildProcess | null = null
 let requestId = 0
 const pendingRequests = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>()
 
+function getBundledBinaryPath(...segments: string[]): string | null {
+  const candidate = path.join(process.resourcesPath, ...segments)
+  return fs.existsSync(candidate) ? candidate : null
+}
+
+function getFfmpegBinaryPath(): string | null {
+  return getBundledBinaryPath('ffmpeg', 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+}
+
+function getFfprobeBinaryPath(): string | null {
+  return getBundledBinaryPath('ffmpeg', 'bin', process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')
+}
+
 // --- Python Process Management ---
 
 function getPythonScriptPath(): string {
@@ -45,7 +58,12 @@ function startPython(): ChildProcess {
   const scriptPath = getPythonScriptPath()
   pythonProcess = spawn('python', [scriptPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    env: {
+      ...process.env,
+      PYTHONIOENCODING: 'utf-8',
+      FFMPEG_PATH: getFfmpegBinaryPath() || process.env.FFMPEG_PATH || '',
+      FFPROBE_PATH: getFfprobeBinaryPath() || process.env.FFPROBE_PATH || '',
+    },
   })
 
   let buffer = ''
@@ -384,6 +402,13 @@ function checkDependencies(): Promise<boolean> {
         resolve(false)
         return
       }
+
+      const bundledFfmpeg = getFfmpegBinaryPath()
+      const bundledFfprobe = getFfprobeBinaryPath()
+      if (!bundledFfmpeg || !bundledFfprobe) {
+        console.warn('[FFmpeg] Bundled ffmpeg/ffprobe not found in resources; export will fall back to PATH.')
+      }
+
       resolve(true)
     })
   })

@@ -14,19 +14,20 @@ const SHORTCUTS = [
     { key: 'Space', desc: 'Play / pause the timeline editor' },
     { key: 'S', desc: 'Split the selected clip at the playhead' },
     { key: 'D', desc: 'Duplicate the selected clip in the timeline editor' },
-    { key: 'Alt+← / →', desc: 'Move the selected timeline clip earlier or later' },
+    { key: 'Alt+← / →', desc: 'Swap the selected timeline clip earlier or later in track order' },
     { key: 'Delete', desc: 'Delete the selected timeline clip and close the gap' },
 ]
 
 const FEATURES = [
-    { title: 'File Explorer', desc: 'Browse and preview files inside .rpa archives from Ren\'Py games. Use the sidebar to select a game folder.' },
+    { title: 'File Explorer', desc: 'Browse and preview files inside .rpa archives from Ren\'Py games. Click the tape-logo area in the left sidebar to collapse it into a slimmer rail when you want more workspace.' },
     { title: 'Filters', desc: 'Filter files by type (All / Video / Image / Audio) using the filter buttons.' },
     { title: 'List & Grid View', desc: 'Toggle between list and grid view using the ☰ / ⊞ buttons.' },
-    { title: 'Play Queue', desc: 'Build a custom playlist: Ctrl+Click or Shift+Click files, then press Q or click “Queue Selected” to import them all into the play queue. Reorder by dragging, set loop counts per item, and use queue interactions to make arrow keys follow the queue.' },
+    { title: 'Selection Tray', desc: 'Use the compact action tray at the top of Files to queue selections, extract the current filter, or reveal shortcut help without giving up file list space.' },
+    { title: 'Play Queue', desc: 'Build a custom playlist: Ctrl+Click or Shift+Click files, then press Q or click “Queue Selected” to import them all into the play queue. Reorder by dragging, adjust loop counts inline, and use queue interactions to make arrow keys follow the queue.' },
     { title: 'Auto-Play', desc: 'Enable "Auto" in the preview toolbar to automatically replay queued items until their loop count is exhausted before advancing to the next item.' },
     { title: 'Extract', desc: 'Use “Extract Selected” to download all selected files, “Extract All” to download everything in the current filter tab, or “Extract” in the queue/preview to save the active media.' },
     { title: 'Encryption Key', desc: 'Some archives require a hex key. Click the 🔑 button in the sidebar to enter it.' },
-    { title: 'Timeline Editor', desc: 'Send queued files to the timeline editor for arranging clips, splitting, duplicating with D, nudging the selected clip earlier or later with Alt+← / →, closing gaps automatically after delete, manually shifting clips left with Close Gaps, and adding external media.' },
+    { title: 'Timeline Editor', desc: 'Send queued files to the timeline editor for arranging clips, splitting, duplicating with D, swapping the selected clip earlier or later from the monitor toolbar with Alt+← / →, closing gaps automatically after delete, manually shifting clips left with Close Gaps, adding external media, and resizing the preview area above the timeline while keeping it visible.' },
 ]
 
 export const UserGuide: FC<UserGuideProps> = ({ onClose }) => {

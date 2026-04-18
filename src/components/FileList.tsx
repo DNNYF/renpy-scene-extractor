@@ -117,6 +117,7 @@ export const FileList: FC<FileListProps> = ({
     const listRef = useRef<VList<RowData>>(null)
     const containerRef = useRef<HTMLDivElement>(null)
     const [containerHeight, setContainerHeight] = useState(600)
+    const [showActions, setShowActions] = useState(false)
 
     // Measure container height
     useEffect(() => {
@@ -139,6 +140,12 @@ export const FileList: FC<FileListProps> = ({
             }
         }
     }, [selectedFile, files, viewMode])
+
+    useEffect(() => {
+        if (selectedFiles.length > 0) {
+            setShowActions(true)
+        }
+    }, [selectedFiles.length])
 
     const itemData: RowData = {
         files,
@@ -231,63 +238,77 @@ export const FileList: FC<FileListProps> = ({
                     </div>
                 </div>
 
-                {/* Actions — separate row */}
-                <div className={`actions-row ${selectedFiles.length > 0 ? 'has-selection' : 'is-idle'}`}>
-                    <div className="actions-status" aria-live="polite">
-                        <span className="actions-status-eyebrow">Selection</span>
-                        <span className="actions-status-label">
-                            {selectedFiles.length > 0
-                                ? `${selectedFiles.length} selected`
-                                : 'No files selected'}
-                        </span>
-                        <span className="actions-status-hint">
-                            {selectedFiles.length > 0
-                                ? 'Ctrl+Click or Shift+Click to adjust'
-                                : 'Ctrl+Click files or press Q to queue'}
-                        </span>
-                    </div>
-                    <div className="actions-groups">
-                        <div className="action-group-block action-group-block-help">
+                <div className={`actions-row ${selectedFiles.length > 0 ? 'has-selection' : 'is-idle'} ${showActions ? 'is-expanded' : 'is-collapsed'}`}>
+                    <div className="actions-summary">
+                        <div className="actions-status" aria-live="polite">
+                            <span className="actions-status-eyebrow">Selection</span>
+                            <span className="actions-status-label">
+                                {selectedFiles.length > 0
+                                    ? `${selectedFiles.length} selected`
+                                    : showActions ? 'No files selected' : 'Selection tools hidden'}
+                            </span>
+                            <span className="actions-status-hint">
+                                {selectedFiles.length > 0
+                                    ? 'Ctrl+Click or Shift+Click to refine, then queue or extract in one step.'
+                                    : 'Open the compact action tray for queue, extract, and shortcut help.'}
+                            </span>
+                        </div>
+
+                        <div className="actions-summary-buttons">
                             <button
                                 className="btn btn-secondary btn-sm action-help-btn"
                                 onClick={onOpenHelp}
                                 title="Show help and keyboard shortcuts"
                             >❔ Help</button>
-                        </div>
-                        <div className="action-group-block">
-                            <span className="action-group-label">Selected</span>
-                            <div className="action-group action-group-selection">
-                                <button
-                                    className="btn btn-secondary btn-sm"
-                                    onClick={onQueueSelected}
-                                    disabled={selectedFiles.length === 0}
-                                    title="Import all selected files to play queue"
-                                >+Q Queue</button>
-                                <button
-                                    className="btn btn-secondary btn-sm"
-                                    onClick={onExtractSelected}
-                                    disabled={selectedFiles.length === 0 || extracting}
-                                    title="Extract all selected files"
-                                >⬇ Extract Selected</button>
-                            </div>
-                        </div>
-                        <div className="action-group-block action-group-block-primary">
-                            <span className="action-group-label">Current view</span>
-                            <div className="action-group action-group-primary">
-                                <button
-                                    className="btn btn-accent btn-sm"
-                                    onClick={onExtractAll}
-                                    disabled={extracting}
-                                    title="Extract all files in the current tab/filter"
-                                >⬇ Extract All</button>
-                            </div>
+                            <button
+                                type="button"
+                                className={`btn btn-secondary btn-sm actions-toggle ${showActions ? 'is-open' : ''}`}
+                                onClick={() => setShowActions((prev) => !prev)}
+                                aria-expanded={showActions}
+                                title={showActions ? 'Collapse selection tools' : 'Expand selection tools'}
+                            >
+                                {showActions ? '▾ Hide actions' : '▸ Show actions'}
+                            </button>
                         </div>
                     </div>
+
+                    {showActions && (
+                        <div className="actions-groups">
+                            <div className="action-group-block">
+                                <span className="action-group-label">Selected</span>
+                                <div className="action-group action-group-selection">
+                                    <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={onQueueSelected}
+                                        disabled={selectedFiles.length === 0}
+                                        title="Import all selected files to play queue"
+                                    >+Q Queue</button>
+                                    <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={onExtractSelected}
+                                        disabled={selectedFiles.length === 0 || extracting}
+                                        title="Extract all selected files"
+                                    >⬇ Extract Selected</button>
+                                </div>
+                            </div>
+                            <div className="action-group-block action-group-block-primary">
+                                <span className="action-group-label">Current view</span>
+                                <div className="action-group action-group-primary">
+                                    <button
+                                        className="btn btn-accent btn-sm"
+                                        onClick={onExtractAll}
+                                        disabled={extracting}
+                                        title="Extract all files in the current tab/filter"
+                                    >⬇ Extract All</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
 
             {/* File List — Virtualized */}
-            <div className="file-list-scroll" ref={containerRef}>
+            <div className={`file-list-scroll ${viewMode === 'list' ? 'mode-list-host' : 'mode-grid-host'}`} ref={containerRef}>
                 {files.length === 0 ? (
                     <div className="panel-empty">
                         <span className="empty-icon-large">🔍</span>

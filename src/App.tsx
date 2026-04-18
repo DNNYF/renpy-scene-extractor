@@ -130,6 +130,7 @@ function App() {
     setError,
     scanFolder,
     scanArchive,
+    removeArchive,
     selectFile,
   } = useArchive()
 
@@ -150,8 +151,10 @@ function App() {
   const {
     viewMode,
     searchQuery,
+    sidebarCollapsed,
     setViewMode,
     setSearchQuery,
+    toggleSidebar,
     showUserGuide,
     toggleUserGuide,
   } = useUIStore()
@@ -223,6 +226,10 @@ function App() {
   const handleSelectArchive = useCallback(async (archive: ArchiveInfo) => {
     await scanArchive(archive.path)
   }, [scanArchive])
+
+  const handleRemoveArchive = useCallback((archivePath: string) => {
+    removeArchive(archivePath)
+  }, [removeArchive])
 
   const handleSelectFile = useCallback((file: ArchiveFile, e: React.MouseEvent) => {
     setPreviewSource('selection')
@@ -503,10 +510,6 @@ function App() {
     }
   }, [hexKey, queue, selectedArchive])
 
-  const folderPath = archives.length > 0
-    ? archives[0].path.split(/[\\/]/).slice(0, -1).join('/')
-    : null
-
   const handleTimelineExport = useCallback(async (project: TimelineExportProject) => {
     const result = await exportTimeline(project as unknown as Record<string, unknown>)
 
@@ -533,11 +536,13 @@ function App() {
         <Sidebar
           archives={archives}
           selectedArchive={selectedArchive}
+          collapsed={sidebarCollapsed}
           onSelectFolder={handleSelectFolder}
           onSelectArchive={handleSelectArchive}
+          onRemoveArchive={handleRemoveArchive}
           onShowKeyInput={() => setShowKeyInput(true)}
+          onToggleCollapse={toggleSidebar}
           encryptionKey={hexKey}
-          folderPath={folderPath}
         />
 
         <main className="main-content">
@@ -579,7 +584,7 @@ function App() {
               <div className="resize-handle-line"></div>
             </div>
 
-            <div className="right-panel">
+            <div className={`right-panel ${showQueue ? 'has-queue' : ''}`}>
               <VideoPreview
                 filePath={previewPath}
                 fileType={activePreviewItem?.type || 'other'}

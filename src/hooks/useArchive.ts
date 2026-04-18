@@ -13,6 +13,7 @@ interface UseArchiveReturn {
   // Actions
   scanFolder: (folderPath: string) => Promise<void>;
   scanArchive: (archivePath: string) => Promise<void>;
+  removeArchive: (archivePath: string) => void;
   selectArchive: (archive: ArchiveInfo | null) => void;
   selectFile: (filePath: string, isMultiSelect?: boolean, isRangeSelect?: boolean) => void;
   clearSelection: () => void;
@@ -28,6 +29,7 @@ export function useArchive(): UseArchiveReturn {
     isLoading,
     error,
     setArchives,
+    removeArchive,
     selectArchive: storeSelectArchive,
     selectFile: storeSelectFile,
     clearSelection,
@@ -160,6 +162,7 @@ export function useArchive(): UseArchiveReturn {
     setError,
     scanFolder,
     scanArchive,
+    removeArchive,
     selectArchive: storeSelectArchive,
     selectFile,
     clearSelection,
