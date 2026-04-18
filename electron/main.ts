@@ -89,7 +89,7 @@ function startPython(): ChildProcess {
   return pythonProcess
 }
 
-function sendPythonCommand(command: string, params: Record<string, any>): Promise<any> {
+function sendPythonCommand(command: string, params: Record<string, any>, timeoutMs = 30000): Promise<any> {
   return new Promise((resolve, reject) => {
     const proc = startPython()
     const id = ++requestId
@@ -109,7 +109,7 @@ function sendPythonCommand(command: string, params: Record<string, any>): Promis
         pendingRequests.delete(id)
         reject(new Error('Python command timed out'))
       }
-    }, 30000)
+    }, timeoutMs)
   })
 }
 
@@ -170,6 +170,37 @@ function registerIpcHandlers() {
       return { success: false, canceled: true }
     }
     return { success: true, path: result.filePaths[0] }
+  })
+
+  ipcMain.handle('export-timeline', async (_event, project: Record<string, unknown>) => {
+    const result = await dialog.showSaveDialog(win!, {
+      title: 'Export Timeline Video',
+      defaultPath: 'timeline-export.mp4',
+      filters: [
+        { name: 'MP4 Video', extensions: ['mp4'] },
+      ],
+    })
+
+    if (result.canceled || !result.filePath) {
+      return { success: false, canceled: true }
+    }
+
+    const tempRoot = fs.mkdtempSync(path.join(app.getPath('temp'), 'timeline-export-'))
+
+    try {
+      return await sendPythonCommand('exportTimeline', {
+        project,
+        outputPath: result.filePath,
+        tempDir: tempRoot,
+      }, 10 * 60 * 1000)
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Timeline export failed',
+      }
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
   })
 
   // Import external media file for timeline editor

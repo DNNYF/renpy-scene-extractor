@@ -8,6 +8,7 @@ import { KeyInput } from './components/KeyInput'
 import { UserGuide } from './components/UserGuide'
 import { TimelineEditor } from './components/timeline/TimelineEditor'
 import type { TimelineSourceClip } from './components/timeline/TimelineEditor'
+import type { TimelineExportProject } from './components/timeline/TimelineEditor'
 import { measureMediaSourceDuration } from './components/timeline/mediaUtils'
 import { ErrorBoundary } from './components/ErrorBoundary'
 
@@ -17,12 +18,20 @@ import type { ArchiveFile, ArchiveInfo, QueueItem } from './stores'
 
 type FilterType = 'all' | 'video' | 'image' | 'audio'
 type AppView = 'extractor' | 'timeline'
+type NavigationTarget = 'files' | 'queue'
 type ExtractFileWithOutput = (
   archivePath: string,
   filename: string,
   key?: string,
   outputDir?: string,
 ) => Promise<{ success: boolean; outputPath?: string; type?: string; error?: string }>
+
+type ExportTimelineApi = (project: Record<string, unknown>) => Promise<{
+  success: boolean
+  canceled?: boolean
+  outputPath?: string
+  error?: string
+}>
 
 function getBaseName(path: string): string {
   return path.split('/').pop()?.split('\\').pop() ?? path
@@ -110,6 +119,7 @@ function rankFileSearchMatch(file: ArchiveFile, normalizedQuery: string, queryTo
 
 function App() {
   const extractFileWithOutput: ExtractFileWithOutput = window.api.extractFile.bind(window.api)
+  const exportTimeline: ExportTimelineApi = (window.api as typeof window.api & { exportTimeline: ExportTimelineApi }).exportTimeline.bind(window.api)
 
   const {
     archives,
@@ -157,6 +167,7 @@ function App() {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [autoPlayNext, setAutoPlayNext] = useState(false)
   const [previewSource, setPreviewSource] = useState<'selection' | 'queue'>('selection')
+  const [navTarget, setNavTarget] = useState<NavigationTarget>('files')
   const [queueLoopPass, setQueueLoopPass] = useState(1)
   const [previewReplayToken, setPreviewReplayToken] = useState(0)
 
@@ -199,7 +210,8 @@ function App() {
       .map((entry) => entry.file)
   }, [files, filterType, searchQuery])
 
-  const navList = currentQueueItem ? queue : filteredFiles
+  const effectiveNavTarget: NavigationTarget = navTarget === 'queue' && queue.length > 0 ? 'queue' : 'files'
+  const navList = effectiveNavTarget === 'queue' ? queue : filteredFiles
 
   const handleSelectFolder = useCallback(async () => {
     const result = await window.api.selectFolder()
@@ -214,6 +226,7 @@ function App() {
 
   const handleSelectFile = useCallback((file: ArchiveFile, e: React.MouseEvent) => {
     setPreviewSource('selection')
+    setNavTarget('files')
     selectFile(file.path, e.ctrlKey || e.metaKey, e.shiftKey)
   }, [selectFile])
 
@@ -224,29 +237,35 @@ function App() {
 
   const handlePlayQueueItem = useCallback((index: number) => {
     setPreviewSource('queue')
+    setNavTarget('queue')
     setQueueLoopPass(1)
     playItem(index)
   }, [playItem])
 
   const handleRemoveFromQueue = useCallback((index: number) => {
+    setNavTarget('queue')
     removeFromQueue(index)
   }, [removeFromQueue])
 
   const handleClearQueue = useCallback(() => {
+    setNavTarget('files')
     clearQueue()
   }, [clearQueue])
 
   const handleMoveQueueItem = useCallback((fromIndex: number, toIndex: number) => {
+    setNavTarget('queue')
     moveItem(fromIndex, toIndex)
   }, [moveItem])
 
   const handleUpdateQueueItem = useCallback((index: number, updates: Partial<QueueItem>) => {
+    setNavTarget('queue')
     updateQueueItem(index, updates)
   }, [updateQueueItem])
 
   const handlePlayAll = useCallback(() => {
     if (queue.length === 0) return
     setPreviewSource('queue')
+    setNavTarget('queue')
     setQueueLoopPass(1)
     playItem(0)
     setAutoPlayNext(true)
@@ -296,7 +315,7 @@ function App() {
   }, [activePreviewItem, hexKey, selectedArchive])
 
   const handleNextFileCallback = useCallback(() => {
-    if (queue.length > 0) {
+    if (effectiveNavTarget === 'queue') {
       setPreviewSource('queue')
       setQueueLoopPass(1)
       playNext()
@@ -313,10 +332,10 @@ function App() {
 
     setPreviewSource('selection')
     selectFile(filteredFiles[nextIndex].path)
-  }, [filteredFiles, playNext, queue.length, selectFile, selectedFile])
+  }, [effectiveNavTarget, filteredFiles, playNext, selectFile, selectedFile])
 
   const handlePrevFileCallback = useCallback(() => {
-    if (queue.length > 0) {
+    if (effectiveNavTarget === 'queue') {
       setPreviewSource('queue')
       setQueueLoopPass(1)
       playPrevious()
@@ -333,7 +352,7 @@ function App() {
 
     setPreviewSource('selection')
     selectFile(filteredFiles[prevIndex].path)
-  }, [filteredFiles, playPrevious, queue.length, selectFile, selectedFile])
+  }, [effectiveNavTarget, filteredFiles, playPrevious, selectFile, selectedFile])
 
   const handleVideoEndedCallback = useCallback(() => {
     if (!autoPlayNext) return
@@ -359,6 +378,12 @@ function App() {
   useEffect(() => {
     setQueueLoopPass(1)
   }, [currentQueueItem?.id])
+
+  useEffect(() => {
+    if (queue.length === 0 && navTarget === 'queue') {
+      setNavTarget('files')
+    }
+  }, [navTarget, queue.length])
 
   useEffect(() => {
     let cancelled = false
@@ -442,7 +467,7 @@ function App() {
     document.body.style.userSelect = 'none'
   }, [fileListWidth])
 
-  const currentNavIndex = currentQueueItem
+  const currentNavIndex = effectiveNavTarget === 'queue'
     ? currentIndex
     : (selectedFile ? navList.findIndex((file) => file.path === selectedFile.path) : -1)
   const totalNavItems = navList.length
@@ -482,9 +507,15 @@ function App() {
     ? archives[0].path.split(/[\\/]/).slice(0, -1).join('/')
     : null
 
-  const handleTimelineExport = useCallback(() => {
-    setError('Timeline export backend belum tersedia. Tombol export sudah disiapkan di editor, tapi proses render/export final belum terhubung.')
-  }, [setError])
+  const handleTimelineExport = useCallback(async (project: TimelineExportProject) => {
+    const result = await exportTimeline(project as unknown as Record<string, unknown>)
+
+    if (!result.success && !result.canceled) {
+      setError(result.error || 'Timeline export failed.')
+    }
+
+    return result
+  }, [exportTimeline, setError])
 
   if (appView === 'timeline') {
     return (
@@ -566,6 +597,8 @@ function App() {
                 onToggleQueue={() => setShowQueue(!showQueue)}
                 showQueue={showQueue}
                 queueLength={queue.length}
+                previewSource={previewSource}
+                navigationTarget={effectiveNavTarget}
                 onEnded={handleVideoEndedCallback}
                 triggerReplay={previewReplayToken}
               />
@@ -579,12 +612,13 @@ function App() {
                   onRemove={handleRemoveFromQueue}
                   onClear={handleClearQueue}
                   onPlayAll={handlePlayAll}
-                  onExtractQueue={handleExtractQueue}
-                  extracting={isLoading}
-                  onOpenEditor={handleOpenEditor}
-                  onUpdateQueueItem={handleUpdateQueueItem}
-                />
-              )}
+                   onExtractQueue={handleExtractQueue}
+                   extracting={isLoading}
+                   onOpenEditor={handleOpenEditor}
+                   onUpdateQueueItem={handleUpdateQueueItem}
+                   onInteract={() => setNavTarget('queue')}
+                 />
+               )}
             </div>
           </div>
         </main>

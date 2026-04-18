@@ -18,6 +18,8 @@ interface VideoPreviewProps {
     onToggleQueue: () => void
     showQueue: boolean
     queueLength: number
+    previewSource: 'selection' | 'queue'
+    navigationTarget: 'files' | 'queue'
     onEnded?: () => void
     triggerReplay?: number
 }
@@ -39,12 +41,17 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
     onToggleQueue,
     showQueue,
     queueLength,
+    previewSource,
+    navigationTarget,
     onEnded,
     triggerReplay
 }) => {
     const videoRef = useRef<HTMLVideoElement>(null)
     const audioRef = useRef<HTMLAudioElement>(null)
     const [error, setError] = useState(false)
+    const navigationLabel = navigationTarget === 'queue' && queueLength > 0 ? 'Queue' : 'Files'
+    const previewSourceLabel = previewSource === 'queue' ? 'Queue item' : 'File selection'
+    const fileLabel = fileName ? fileName.split('/').pop() : ''
 
     useEffect(() => {
         setError(false)
@@ -80,9 +87,67 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
         }
     }
 
+    const renderToolbar = () => (
+        <div className="preview-toolbar">
+            <div className="preview-toolbar-main">
+                <div className="preview-title-row">
+                    <span className="toolbar-title">Preview</span>
+                    <span className={`preview-source-badge ${previewSource === 'queue' ? 'is-queue' : 'is-files'}`}>
+                        {previewSourceLabel}
+                    </span>
+                    {navTotal > 0 && (
+                        <span className="nav-counter">{navIndex + 1} / {navTotal}</span>
+                    )}
+                </div>
+                <p className="preview-toolbar-hint">
+                    Arrow keys target <strong>{navigationLabel}</strong>
+                </p>
+            </div>
+
+            <div className="preview-toolbar-actions">
+                <label className={`autoplay-toggle ${autoPlayNext ? 'enabled' : ''}`} title="Auto-play next preview item">
+                    <input
+                        type="checkbox"
+                        checked={autoPlayNext}
+                        onChange={onToggleAutoPlay}
+                    />
+                    <span>Auto-play next</span>
+                </label>
+
+                <div className="preview-nav-group" role="group" aria-label="Preview navigation">
+                    <button className="btn btn-secondary btn-sm preview-nav-btn" onClick={onPrev} title="Previous (↑ / ←)">
+                        ← Prev
+                    </button>
+                    <button className="btn btn-secondary btn-sm preview-nav-btn" onClick={onNext} title="Next (↓ / →)">
+                        Next →
+                    </button>
+                </div>
+
+                <button
+                    className="btn btn-secondary btn-sm preview-toolbar-btn"
+                    onClick={onAddToQueue}
+                    disabled={!hasSelection}
+                    title="Add the current selection to the queue"
+                >
+                    + Queue
+                </button>
+
+                <button
+                    className={`btn btn-secondary btn-sm preview-toolbar-btn ${showQueue ? 'btn-active' : ''}`}
+                    onClick={onToggleQueue}
+                    title="Show or hide the play queue"
+                >
+                    Queue
+                    {queueLength > 0 && <span className="queue-count">{queueLength}</span>}
+                </button>
+            </div>
+        </div>
+    )
+
     if (isLoading) {
         return (
             <div className="preview-panel">
+                {renderToolbar()}
                 <div className="panel-loading">
                     <div className="spinner"></div>
                     <p>Loading preview...</p>
@@ -94,23 +159,12 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
     if (!filePath) {
         return (
             <div className="preview-panel">
-                <div className="preview-toolbar">
-                    <span className="toolbar-title">Preview</span>
-                    <div className="toolbar-actions">
-                        <button
-                            className={`icon-btn ${showQueue ? 'active' : ''}`}
-                            onClick={onToggleQueue}
-                            title="Toggle Play Queue"
-                        >
-                            ☰ {queueLength > 0 && <span className="queue-count">{queueLength}</span>}
-                        </button>
-                    </div>
-                </div>
+                {renderToolbar()}
                 <div className="panel-empty">
                     <span className="empty-icon-large">👁️</span>
                     <h3>Preview</h3>
                     <p>Select a file to preview</p>
-                    <p className="hint-text">Use Arrow Keys to navigate · Ctrl+Click to multi-select</p>
+                    <p className="hint-text">Arrow keys follow your last file or queue interaction · Ctrl+Click to multi-select</p>
                 </div>
             </div>
         )
@@ -173,42 +227,7 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
 
     return (
         <div className="preview-panel">
-            {/* Compact toolbar */}
-            <div className="preview-toolbar">
-                <div className="toolbar-left">
-                    <span className="toolbar-title">Preview</span>
-                    {navTotal > 0 && (
-                        <span className="nav-counter">{navIndex + 1} / {navTotal}</span>
-                    )}
-                </div>
-                <div className="toolbar-actions">
-                    <label className="autoplay-toggle" title="Auto-play next">
-                        <input
-                            type="checkbox"
-                            checked={autoPlayNext}
-                            onChange={onToggleAutoPlay}
-                        />
-                        <span>Auto</span>
-                    </label>
-                    <div className="btn-group">
-                        <button className="icon-btn" onClick={onPrev} title="Previous (↑)">◀</button>
-                        <button className="icon-btn" onClick={onNext} title="Next (↓)">▶</button>
-                    </div>
-                    <button
-                        className="icon-btn"
-                        onClick={onAddToQueue}
-                        disabled={!hasSelection}
-                        title="Add to Queue"
-                    >+Q</button>
-                    <button
-                        className={`icon-btn ${showQueue ? 'active' : ''}`}
-                        onClick={onToggleQueue}
-                        title="Toggle Play Queue"
-                    >
-                        ☰ {queueLength > 0 && <span className="queue-count">{queueLength}</span>}
-                    </button>
-                </div>
-            </div>
+            {renderToolbar()}
 
             <div className="preview-content">
                 <div className={`media-container type-${fileType}`}>
@@ -226,10 +245,13 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
 
             <div className="preview-footer">
                 <div className="preview-info">
-                    <span className="preview-filename" title={fileName || ''}>{fileName ? fileName.split('/').pop() : ''}</span>
+                    <div className="preview-info-row">
+                        <span className="preview-filename" title={fileName || ''}>{fileLabel}</span>
+                        <span className={`preview-type-badge type-${fileType}`}>{fileType}</span>
+                    </div>
                     <code className="preview-path">{fileName}</code>
                 </div>
-                <button className="btn btn-secondary btn-sm" onClick={onExtract}>
+                <button className="btn btn-secondary btn-sm preview-extract-btn" onClick={onExtract}>
                     ⬇ Extract
                 </button>
             </div>

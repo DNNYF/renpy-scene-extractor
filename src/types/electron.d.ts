@@ -44,6 +44,12 @@ interface ElectronApi {
     }>
     selectOutputFolder(): Promise<{ success: boolean; canceled?: boolean; path?: string }>
     importMedia(): Promise<{ success: boolean; canceled?: boolean; filePath?: string; fileName?: string; type?: string }>
+    exportTimeline(project: Record<string, unknown>): Promise<{
+        success: boolean
+        canceled?: boolean
+        outputPath?: string
+        error?: string
+    }>
 }
 
 declare global {

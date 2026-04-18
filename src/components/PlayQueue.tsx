@@ -12,6 +12,7 @@ interface PlayQueueProps {
     onExtractQueue: () => void
     onOpenEditor: () => void
     onUpdateQueueItem: (index: number, updates: Partial<QueueItem>) => void
+    onInteract: () => void
     extracting?: boolean
 }
 
@@ -37,13 +38,16 @@ export const PlayQueue: FC<PlayQueueProps> = ({
     onExtractQueue,
     onOpenEditor,
     onUpdateQueueItem,
+    onInteract,
     extracting = false,
 }) => {
     const [dragIndex, setDragIndex] = useState<number | null>(null)
     const [overIndex, setOverIndex] = useState<number | null>(null)
     const dragNode = useRef<HTMLLIElement | null>(null)
+    const activeQueueItem = currentIndex >= 0 ? queue[currentIndex] ?? null : null
 
     const handleDragStart = (e: React.DragEvent, index: number) => {
+        onInteract()
         setDragIndex(index)
         dragNode.current = e.currentTarget as HTMLLIElement
         e.dataTransfer.effectAllowed = 'move'
@@ -70,27 +74,42 @@ export const PlayQueue: FC<PlayQueueProps> = ({
 
     if (queue.length === 0) {
         return (
-            <div className="play-queue">
+            <div className="play-queue" onMouseDownCapture={onInteract} onFocusCapture={onInteract}>
                 <div className="queue-header">
-                    <h3 className="queue-title">
-                        Play Queue
-                        <span className="queue-badge">0</span>
-                    </h3>
+                    <div className="queue-header-main">
+                        <div className="queue-title-row">
+                            <h3 className="queue-title">
+                                Play Queue
+                                <span className="queue-badge">0</span>
+                            </h3>
+                        </div>
+                        <p className="queue-subtitle">Build a queue from the file list to preview clips in sequence.</p>
+                    </div>
                 </div>
                 <div className="queue-empty">
-                    <span>Ctrl+Click or press Q to add files</span>
+                    <span>Ctrl+Click or press Q to add files, then drag to reorder or set loops per item.</span>
                 </div>
             </div>
         )
     }
 
     return (
-        <div className="play-queue">
+        <div className="play-queue" onMouseDownCapture={onInteract} onFocusCapture={onInteract}>
             <div className="queue-header">
-                <h3 className="queue-title">
-                    Play Queue
-                    <span className="queue-badge">{queue.length}</span>
-                </h3>
+                <div className="queue-header-main">
+                    <div className="queue-title-row">
+                        <h3 className="queue-title">
+                            Play Queue
+                            <span className="queue-badge">{queue.length}</span>
+                        </h3>
+                        {activeQueueItem && <span className="queue-current-chip">Now playing</span>}
+                    </div>
+                    <p className="queue-subtitle">
+                        {activeQueueItem
+                            ? `${getFileName(activeQueueItem.name)} is active. Queue interactions set arrow-key navigation to the queue.`
+                            : 'Drag to reorder, adjust loop counts, or send the queue to the timeline editor.'}
+                    </p>
+                </div>
                 <div className="queue-actions">
                     <button
                         className="btn btn-accent btn-sm"
@@ -124,24 +143,45 @@ export const PlayQueue: FC<PlayQueueProps> = ({
                         onDragOver={(e) => handleDragOver(e, index)}
                     >
                         <span className="queue-drag-handle" title="Drag to reorder">⠿</span>
-                        <button
-                            className={`queue-play-btn ${index === currentIndex ? 'active' : ''}`}
-                            onClick={() => onPlay(index)}
-                            title="Play this item"
-                        >
-                            {index === currentIndex ? '⏸' : '▶'}
-                        </button>
-                        <span className="queue-icon">{TYPE_ICONS[file.type] || '📄'}</span>
-                        <div className="queue-info">
-                            <span
-                                className="queue-name"
-                                title={file.name}
-                                onClick={() => onPlay(index)}
-                            >
-                                {getFileName(file.name)}
-                            </span>
-                            <div className="queue-loop-control">
-                                <span className="loop-label">Loops:</span>
+                        <div className="queue-row-body">
+                            <div className="queue-row-main">
+                                <button
+                                    className={`queue-play-btn ${index === currentIndex ? 'active' : ''}`}
+                                    onClick={() => onPlay(index)}
+                                    title="Play this item"
+                                >
+                                    {index === currentIndex ? '⏸' : '▶'}
+                                </button>
+                                <span className="queue-icon">{TYPE_ICONS[file.type] || '📄'}</span>
+                                <div className="queue-info">
+                                    <div className="queue-name-row">
+                                        <span className="queue-index">#{index + 1}</span>
+                                        <button
+                                            className="queue-name"
+                                            type="button"
+                                            title={file.name}
+                                            onClick={() => onPlay(index)}
+                                        >
+                                            {getFileName(file.name)}
+                                        </button>
+                                        {index === currentIndex && <span className="queue-state-badge">Active</span>}
+                                    </div>
+                                    <div className="queue-meta-row">
+                                        <span className={`queue-item-type type-${file.type}`}>{file.type}</span>
+                                        <span className="queue-path" title={file.name}>{file.name}</span>
+                                    </div>
+                                </div>
+                                <button
+                                    className="queue-remove"
+                                    onClick={(e) => { e.stopPropagation(); onRemove(index) }}
+                                    title="Remove"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+
+                            <label className="queue-loop-control">
+                                <span className="loop-label">Loops</span>
                                 <input
                                     type="number"
                                     min="1"
@@ -154,15 +194,8 @@ export const PlayQueue: FC<PlayQueueProps> = ({
                                     onClick={(e) => e.stopPropagation()}
                                     className="loop-input"
                                 />
-                            </div>
+                            </label>
                         </div>
-                        <button
-                            className="queue-remove"
-                            onClick={(e) => { e.stopPropagation(); onRemove(index) }}
-                            title="Remove"
-                        >
-                            ✕
-                        </button>
                     </li>
                 ))}
             </ul>

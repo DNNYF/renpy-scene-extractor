@@ -31,6 +31,11 @@ export interface TimelineClip {
     trimEnd: number    // trim from end (seconds)
 }
 
+export interface TimelineExportProject {
+    tracks: Track[]
+    totalDuration: number
+}
+
 interface Track {
     id: string
     type: 'video' | 'audio'
@@ -41,7 +46,12 @@ interface Track {
 interface TimelineEditorProps {
     initialClips: TimelineSourceClip[]
     onBack: () => void
-    onExport?: () => void
+    onExport?: (project: TimelineExportProject) => Promise<{
+        success: boolean
+        canceled?: boolean
+        outputPath?: string
+        error?: string
+    }>
 }
 
 /* ===================================================
@@ -70,6 +80,7 @@ function isTimelineMediaType(value: string | undefined): value is TimelineClip['
 
 const DEFAULT_IMG_DURATION = 5 // seconds
 const MIN_CLIP_DURATION = 0.1
+const CLIP_MOVE_STEP = 0.25
 const MIN_ZOOM = 10  // px per second
 const MAX_ZOOM = 200
 
@@ -209,6 +220,8 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
     const [isPlaying, setIsPlaying] = useState(false)
     const [zoom, setZoom] = useState(50) // px per second
     const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
+    const [isExporting, setIsExporting] = useState(false)
+    const [exportMessage, setExportMessage] = useState<string | null>(null)
     const [durationDraft, setDurationDraft] = useState('')
     const [trimStartDraft, setTrimStartDraft] = useState('')
     const [startTimeDraft, setStartTimeDraft] = useState('')
@@ -362,6 +375,72 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
 
         updateClipInTrack(clipId, currentClip => ({ ...currentClip, startTime: newStart }))
     }, [getClipNeighborBounds, getTrackForClip, updateClipInTrack])
+
+    const moveSelectedClipBy = useCallback((direction: -1 | 1) => {
+        if (!selectedClipId) return
+
+        const located = getTrackForClip(selectedClipId)
+        if (!located) return
+
+        updateClipStartTime(selectedClipId, located.clip.startTime + (direction * CLIP_MOVE_STEP))
+    }, [getTrackForClip, selectedClipId, updateClipStartTime])
+
+    const selectedClipMoveState = useMemo(() => {
+        if (!selectedClipId) {
+            return {
+                canMoveEarlier: false,
+                canMoveLater: false,
+            }
+        }
+
+        const located = getTrackForClip(selectedClipId)
+        if (!located) {
+            return {
+                canMoveEarlier: false,
+                canMoveLater: false,
+            }
+        }
+
+        const { track, clip } = located
+        const { prevEnd, nextStart } = getClipNeighborBounds(track, clip.id)
+        const effectiveDuration = getEffectiveDuration(clip)
+        const maxStart = Number.isFinite(nextStart)
+            ? Math.max(prevEnd, nextStart - effectiveDuration)
+            : Infinity
+
+        return {
+            canMoveEarlier: clip.startTime > prevEnd + 0.001,
+            canMoveLater: Number.isFinite(maxStart)
+                ? clip.startTime < maxStart - 0.001
+                : true,
+        }
+    }, [getClipNeighborBounds, getTrackForClip, selectedClipId])
+
+    const handleExport = useCallback(async () => {
+        if (!onExport || isExporting) return
+
+        setIsExporting(true)
+        setExportMessage(null)
+
+        try {
+            const result = await onExport({
+                tracks,
+                totalDuration,
+            })
+
+            if (result.canceled) {
+                setExportMessage('Export canceled.')
+            } else if (!result.success) {
+                setExportMessage(result.error || 'Failed to export timeline.')
+            } else {
+                setExportMessage(result.outputPath ? `Exported: ${result.outputPath}` : 'Export completed.')
+            }
+        } catch (error) {
+            setExportMessage(error instanceof Error ? error.message : 'Failed to export timeline.')
+        } finally {
+            setIsExporting(false)
+        }
+    }, [isExporting, onExport, totalDuration, tracks])
 
     const updateClipTrimStart = useCallback((clipId: string, requestedTrimStart: number) => {
         const located = getTrackForClip(clipId)
@@ -876,7 +955,20 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
     // --- Keyboard shortcuts ---
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            if (e.target instanceof HTMLInputElement) return
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+
+            if (selectedClipId && e.altKey && e.key === 'ArrowLeft') {
+                e.preventDefault()
+                moveSelectedClipBy(-1)
+                return
+            }
+
+            if (selectedClipId && e.altKey && e.key === 'ArrowRight') {
+                e.preventDefault()
+                moveSelectedClipBy(1)
+                return
+            }
+
             if (e.key === ' ') { e.preventDefault(); togglePlayback() }
             if (e.key === 'Delete' && selectedClipId) { deleteClip(selectedClipId) }
             if (e.key === 's' || e.key === 'S') { splitClipAtPlayhead() }
@@ -884,7 +976,7 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
-    }, [togglePlayback, selectedClipId, deleteClip, splitClipAtPlayhead, duplicateSelectedClip])
+    }, [togglePlayback, selectedClipId, deleteClip, splitClipAtPlayhead, duplicateSelectedClip, moveSelectedClipBy])
 
     // --- Render ---
     return (
@@ -903,9 +995,9 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                     <span className="timeline-time">{formatTime(playheadTime)}</span>
                 </div>
 
-                <div className="toolbar-actions">
-                    <button
-                        className="btn btn-secondary btn-sm"
+                    <div className="toolbar-actions">
+                        <button
+                            className="btn btn-secondary btn-sm"
                         onClick={splitClipAtPlayhead}
                         disabled={!selectedClipId}
                         title="Split clip at playhead (S)"
@@ -934,9 +1026,10 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                     {onExport ? (
                         <button
                             className="btn btn-secondary btn-sm"
-                            onClick={onExport}
+                            onClick={handleExport}
+                            disabled={isExporting}
                             title="Export timeline"
-                        >⬇ Export</button>
+                        >{isExporting ? '⏳ Exporting…' : '⬇ Export'}</button>
                     ) : (
                         <div className="timeline-export-placeholder">
                             <button
@@ -949,8 +1042,8 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                         </div>
                     )}
                     <span className="toolbar-divider" />
-                    <label className="zoom-control">
-                        🔍
+                        <label className="zoom-control">
+                            🔍
                         <input
                             type="range"
                             min={MIN_ZOOM}
@@ -961,6 +1054,7 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                     </label>
                 </div>
             </div>
+            {exportMessage && <div className="timeline-export-status">{exportMessage}</div>}
 
             <div className="timeline-inspector">
                 <div className="inspector-header">
@@ -980,6 +1074,7 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                 </div>
 
                 {selectedClip ? (
+                    <>
                     <div className="inspector-grid">
                         <label className="timeline-field">
                             <span className="timeline-field-label">Timeline start</span>
@@ -1054,6 +1149,30 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                             </div>
                         </div>
                     </div>
+
+                    <div className="timeline-move-controls">
+                        <span className="timeline-field-label">Move clip</span>
+                        <div className="timeline-move-buttons">
+                            <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => moveSelectedClipBy(-1)}
+                                disabled={!selectedClipMoveState.canMoveEarlier}
+                                title="Move selected clip earlier by 0.25s (Alt+←)"
+                            >
+                                ← Earlier
+                            </button>
+                            <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => moveSelectedClipBy(1)}
+                                disabled={!selectedClipMoveState.canMoveLater}
+                                title="Move selected clip later by 0.25s (Alt+→)"
+                            >
+                                Later →
+                            </button>
+                        </div>
+                        <span className="timeline-move-hint">Moves in 0.25s steps and respects the existing collision limits.</span>
+                    </div>
+                    </>
                 ) : (
                     <p className="inspector-empty">Pick a clip to edit its start, trim, and duration with exact values.</p>
                 )}
@@ -1193,7 +1312,7 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                 {selectedClip && <span>Selected: {getFileName(selectedClip.fileName)}</span>}
                 {selectedClip && <span>Length: {formatTime(getEffectiveDuration(selectedClip))}</span>}
                 <span className="timeline-shortcuts-hint">
-                    Space: Play/Pause · S: Split · D: Duplicate · Del: Delete
+                    Space: Play/Pause · S: Split · D: Duplicate · Alt+←/→: Move · Del: Delete
                 </span>
             </div>
         </div>

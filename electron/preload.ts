@@ -62,6 +62,15 @@ const api = {
   }> => {
     return ipcRenderer.invoke('import-media')
   },
+
+  exportTimeline: (project: Record<string, unknown>): Promise<{
+    success: boolean
+    canceled?: boolean
+    outputPath?: string
+    error?: string
+  }> => {
+    return ipcRenderer.invoke('export-timeline', project)
+  },
 }
 
 contextBridge.exposeInMainWorld('api', api)
