@@ -1,4 +1,5 @@
 import { FC, useRef, useEffect, useState } from 'react'
+import { buildLocalFileUrl } from './timeline/mediaUtils'
 
 interface VideoPreviewProps {
     filePath: string | null
@@ -49,6 +50,9 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
         setError(false)
         if (videoRef.current) {
             videoRef.current.load()
+        }
+        if (audioRef.current) {
+            audioRef.current.load()
         }
     }, [filePath])
 
@@ -113,7 +117,7 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
     }
 
     const currentPath = filePath
-    const fileUrl = `local-file://${encodeURIComponent(currentPath.replace(/\\/g, '/'))}`
+    const fileUrl = buildLocalFileUrl(currentPath)
 
     const renderMedia = () => {
         if (fileType === 'video') {
@@ -148,6 +152,7 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
                         <span className="audio-icon">🎵</span>
                     </div>
                     <audio
+                        ref={audioRef}
                         controls
                         autoPlay
                         onEnded={handleEnded}

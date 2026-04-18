@@ -1,18 +1,12 @@
 import { FC } from 'react'
-
-interface RpaArchive {
-    path: string
-    name: string
-    size: number
-    relative: string
-}
+import type { ArchiveInfo } from '../stores'
 
 interface SidebarProps {
     folderPath: string | null
-    archives: RpaArchive[]
-    selectedArchive: RpaArchive | null
+    archives: ArchiveInfo[]
+    selectedArchive: ArchiveInfo | null
     onSelectFolder: () => void
-    onSelectArchive: (archive: RpaArchive) => void
+    onSelectArchive: (archive: ArchiveInfo) => void
     onShowKeyInput: () => void
     encryptionKey: string
 }

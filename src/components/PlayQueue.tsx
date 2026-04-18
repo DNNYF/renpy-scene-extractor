@@ -1,17 +1,10 @@
 import { FC, useState, useRef } from 'react'
-
-interface QueueItem {
-    name: string
-    size: number
-    type: 'video' | 'image' | 'audio' | 'other'
-    parts: number
-    loopCount: number
-}
+import type { QueueItem } from '../stores'
 
 interface PlayQueueProps {
     queue: QueueItem[]
     currentIndex: number
-    onReorder: (queue: QueueItem[]) => void
+    onMoveItem: (fromIndex: number, toIndex: number) => void
     onPlay: (index: number) => void
     onRemove: (index: number) => void
     onClear: () => void
@@ -23,7 +16,7 @@ interface PlayQueueProps {
 }
 
 function getFileName(path: string): string {
-    return path.split('/').pop() || path
+    return path.split('/').pop()?.split('\\').pop() || path
 }
 
 const TYPE_ICONS: Record<string, string> = {
@@ -36,7 +29,7 @@ const TYPE_ICONS: Record<string, string> = {
 export const PlayQueue: FC<PlayQueueProps> = ({
     queue,
     currentIndex,
-    onReorder,
+    onMoveItem,
     onPlay,
     onRemove,
     onClear,
@@ -62,10 +55,7 @@ export const PlayQueue: FC<PlayQueueProps> = ({
     const handleDragEnd = () => {
         if (dragNode.current) dragNode.current.style.opacity = '1'
         if (dragIndex !== null && overIndex !== null && dragIndex !== overIndex) {
-            const newQueue = [...queue]
-            const [moved] = newQueue.splice(dragIndex, 1)
-            newQueue.splice(overIndex, 0, moved)
-            onReorder(newQueue)
+            onMoveItem(dragIndex, overIndex)
         }
         setDragIndex(null)
         setOverIndex(null)
@@ -126,7 +116,7 @@ export const PlayQueue: FC<PlayQueueProps> = ({
             <ul className="queue-list">
                 {queue.map((file, index) => (
                     <li
-                        key={`${file.name}-${index}`}
+                        key={file.id}
                         className={`queue-item ${index === currentIndex ? 'playing' : ''} ${overIndex === index ? 'drag-over' : ''}`}
                         draggable
                         onDragStart={(e) => handleDragStart(e, index)}
@@ -156,7 +146,7 @@ export const PlayQueue: FC<PlayQueueProps> = ({
                                     type="number"
                                     min="1"
                                     max="99"
-                                    value={file.loopCount || 1}
+                                    value={Math.max(1, file.loopCount)}
                                     onChange={(e) => {
                                         const val = parseInt(e.target.value) || 1
                                         onUpdateQueueItem(index, { loopCount: Math.max(1, val) })

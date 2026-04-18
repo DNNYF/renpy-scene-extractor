@@ -1,18 +1,36 @@
 {
   "appId": "com.denny.renpysceneextractor",
   "productName": "RenPy Scene Extractor",
+  "compression": "maximum",
+  "asar": true,
   "directories": {
     "output": "release/${version}"
   },
   "files": [
-    "dist",
-    "dist-electron"
+    "dist/**/*",
+    "dist-electron/**/*",
+    "!**/*.map",
+    "!**/*.md",
+    "!**/test{,s}/**/*",
+    "!**/__tests__/**/*"
   ],
   "extraResources": [
     {
       "from": "python",
       "to": "python",
-      "filter": ["**/*"]
+      "filter": [
+        "rpa_tool.py",
+        "requirements.txt",
+        "!**/__pycache__/**/*",
+        "!**/*.pyc",
+        "!**/*.pyo",
+        "!**/.pytest_cache/**/*",
+        "!**/.mypy_cache/**/*",
+        "!**/venv/**/*",
+        "!**/.venv/**/*",
+        "!**/*.whl",
+        "!**/*.zip"
+      ]
     }
   ],
   "mac": {

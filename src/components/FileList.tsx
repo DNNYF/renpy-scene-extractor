@@ -1,29 +1,25 @@
 import { FC, useEffect, useRef, useState } from 'react'
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window'
-
-interface RpaFile {
-    name: string
-    size: number
-    type: 'video' | 'image' | 'audio' | 'other'
-    parts: number
-}
+import type { ArchiveFile } from '../stores'
 
 type FilterType = 'all' | 'video' | 'image' | 'audio'
 type ViewMode = 'list' | 'grid'
 
 interface FileListProps {
-    files: RpaFile[]
+    files: ArchiveFile[]
     totalFiles: number
-    selectedFile: RpaFile | null
-    selectedFiles: RpaFile[]
+    selectedFile: ArchiveFile | null
+    selectedFiles: ArchiveFile[]
     archiveVersion: string
     filterType: FilterType
     viewMode: ViewMode
     onFilterChange: (filter: FilterType) => void
     onViewModeChange: (mode: ViewMode) => void
-    onSelectFile: (file: RpaFile, e: React.MouseEvent) => void
+    onSelectFile: (file: ArchiveFile, e: React.MouseEvent) => void
     onExtractAll: () => void
     onExtractSelected: () => void
+    onQueueSelected: () => void
+    onOpenHelp: () => void
     hasArchive: boolean
     extracting?: boolean
     searchQuery?: string
@@ -52,16 +48,16 @@ function formatSize(bytes: number): string {
 }
 
 function getFileName(path: string): string {
-    return path.split('/').pop() || path
+    return path.split('/').pop()?.split('\\').pop() || path
 }
 
 const ITEM_HEIGHT = 44
 
 interface RowData {
-    files: RpaFile[]
-    selectedFile: RpaFile | null
-    selectedFiles: RpaFile[]
-    onSelectFile: (file: RpaFile, e: React.MouseEvent) => void
+    files: ArchiveFile[]
+    selectedFile: ArchiveFile | null
+    selectedFiles: ArchiveFile[]
+    onSelectFile: (file: ArchiveFile, e: React.MouseEvent) => void
 }
 
 // Virtualized list row renderer
@@ -70,8 +66,8 @@ const FileRow: FC<ListChildComponentProps<RowData>> = ({ index, style, data }) =
     const file = files[index]
     if (!file) return null
 
-    const isActive = selectedFile?.name === file.name
-    const isQueued = selectedFiles.some(f => f.name === file.name)
+    const isActive = selectedFile?.path === file.path
+    const isQueued = selectedFiles.some(f => f.path === file.path)
 
     return (
         <div style={style}>
@@ -111,6 +107,8 @@ export const FileList: FC<FileListProps> = ({
     onSelectFile,
     onExtractAll,
     onExtractSelected,
+    onQueueSelected,
+    onOpenHelp,
     hasArchive,
     extracting = false,
     searchQuery = '',
@@ -135,7 +133,7 @@ export const FileList: FC<FileListProps> = ({
     // Scroll to active item when selectedFile changes
     useEffect(() => {
         if (selectedFile && listRef.current && viewMode === 'list') {
-            const idx = files.findIndex(f => f.name === selectedFile.name)
+            const idx = files.findIndex(f => f.path === selectedFile.path)
             if (idx >= 0) {
                 listRef.current.scrollToItem(idx, 'smart')
             }
@@ -167,16 +165,20 @@ export const FileList: FC<FileListProps> = ({
             <div className="panel-header">
                 <div className="panel-top-row">
                     <div className="panel-title-group">
-                        <h2 className="panel-title">
-                            Files
-                            <span className="panel-badge">{files.length} / {totalFiles}</span>
-                        </h2>
-                        {archiveVersion && (
-                            <span className="version-badge">RPA-{archiveVersion}</span>
-                        )}
+                        <div className="panel-title-stack">
+                            <div className="panel-title-row">
+                                <h2 className="panel-title">Files</h2>
+                                <span className="panel-badge">{files.length} / {totalFiles}</span>
+                                {archiveVersion && (
+                                    <span className="version-badge">RPA-{archiveVersion}</span>
+                                )}
+                            </div>
+                            <p className="panel-subtitle">Browse and extract archive contents</p>
+                        </div>
                     </div>
 
                     <div className="panel-tools">
+                        <span className="panel-tools-label">View</span>
                         <div className="view-toggles">
                             <button
                                 className={`icon-btn ${viewMode === 'list' ? 'active' : ''}`}
@@ -212,39 +214,74 @@ export const FileList: FC<FileListProps> = ({
                             )}
                         </div>
                     )}
-                    <div className="filter-row">
-                        {FILTER_OPTIONS.map(opt => (
-                            <button
-                                key={opt.value}
-                                className={`filter-btn ${filterType === opt.value ? 'active' : ''}`}
-                                onClick={() => onFilterChange(opt.value)}
-                            >
-                                <span className="filter-icon">{opt.icon}</span>
-                                <span className="filter-label">{opt.label}</span>
-                            </button>
-                        ))}
+                    <div className="filter-toolbar">
+                        <span className="filter-toolbar-label">Filter</span>
+                        <div className="filter-row">
+                            {FILTER_OPTIONS.map(opt => (
+                                <button
+                                    key={opt.value}
+                                    className={`filter-btn ${filterType === opt.value ? 'active' : ''}`}
+                                    onClick={() => onFilterChange(opt.value)}
+                                >
+                                    <span className="filter-icon">{opt.icon}</span>
+                                    <span className="filter-label">{opt.label}</span>
+                                </button>
+                            ))}
+                        </div>
                     </div>
                 </div>
 
                 {/* Actions — separate row */}
-                <div className="actions-row">
-                    <span className="actions-hint">
-                        {selectedFiles.length > 0
-                            ? `${selectedFiles.length} selected`
-                            : 'Ctrl+Click / Q to queue'}
-                    </span>
-                    <div className="action-group">
-                        <button
-                            className="btn btn-secondary btn-sm"
-                            onClick={onExtractSelected}
-                            disabled={!selectedFile || extracting}
-                            title="Extract selected file"
-                        >⬇ Selected</button>
-                        <button
-                            className="btn btn-accent btn-sm"
-                            onClick={onExtractAll}
-                            disabled={extracting}
-                        >⬇ All</button>
+                <div className={`actions-row ${selectedFiles.length > 0 ? 'has-selection' : 'is-idle'}`}>
+                    <div className="actions-status" aria-live="polite">
+                        <span className="actions-status-eyebrow">Selection</span>
+                        <span className="actions-status-label">
+                            {selectedFiles.length > 0
+                                ? `${selectedFiles.length} selected`
+                                : 'No files selected'}
+                        </span>
+                        <span className="actions-status-hint">
+                            {selectedFiles.length > 0
+                                ? 'Ctrl+Click or Shift+Click to adjust'
+                                : 'Ctrl+Click files or press Q to queue'}
+                        </span>
+                    </div>
+                    <div className="actions-groups">
+                        <div className="action-group-block action-group-block-help">
+                            <button
+                                className="btn btn-secondary btn-sm action-help-btn"
+                                onClick={onOpenHelp}
+                                title="Show help and keyboard shortcuts"
+                            >❔ Help</button>
+                        </div>
+                        <div className="action-group-block">
+                            <span className="action-group-label">Selected</span>
+                            <div className="action-group action-group-selection">
+                                <button
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={onQueueSelected}
+                                    disabled={selectedFiles.length === 0}
+                                    title="Import all selected files to play queue"
+                                >+Q Queue</button>
+                                <button
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={onExtractSelected}
+                                    disabled={selectedFiles.length === 0 || extracting}
+                                    title="Extract all selected files"
+                                >⬇ Extract Selected</button>
+                            </div>
+                        </div>
+                        <div className="action-group-block action-group-block-primary">
+                            <span className="action-group-label">Current view</span>
+                            <div className="action-group action-group-primary">
+                                <button
+                                    className="btn btn-accent btn-sm"
+                                    onClick={onExtractAll}
+                                    disabled={extracting}
+                                    title="Extract all files in the current tab/filter"
+                                >⬇ Extract All</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -273,25 +310,29 @@ export const FileList: FC<FileListProps> = ({
                     /* Grid view — show first 200 for perf */
                     <ul className="file-list mode-grid">
                         {files.slice(0, 200).map((file) => {
-                            const isActive = selectedFile?.name === file.name
-                            const isQueued = selectedFiles.some(f => f.name === file.name)
+                            const isActive = selectedFile?.path === file.path
+                            const isQueued = selectedFiles.some(f => f.path === file.path)
                             return (
                                 <li
-                                    key={file.name}
+                                    key={file.path}
                                     className={`file-item ${isActive ? 'active' : ''} ${isQueued ? 'queued' : ''} file-type-${file.type}`}
                                     onClick={(e) => onSelectFile(file, e)}
                                     tabIndex={0}
                                 >
-                                    <div className="file-icon-wrapper">
-                                        <span className="file-icon">{TYPE_ICONS[file.type] || '📄'}</span>
+                                    <div className="grid-item-top">
+                                        <div className="file-icon-wrapper">
+                                            <span className="file-icon">{TYPE_ICONS[file.type] || '📄'}</span>
+                                        </div>
+                                        {isQueued && <span className="grid-queue-indicator">Queued</span>}
                                     </div>
                                     <div className="file-info">
                                         <span className="file-name" title={file.name}>{getFileName(file.name)}</span>
+                                        <span className="file-path" title={file.name}>{file.name}</span>
                                     </div>
                                     <div className="file-meta">
                                         <span className="file-size">{formatSize(file.size)}</span>
+                                        <span className={`file-type-badge type-${file.type}`}>{file.type}</span>
                                     </div>
-                                    {isQueued && <span className="queue-indicator">●</span>}
                                 </li>
                             )
                         })}

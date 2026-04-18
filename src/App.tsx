@@ -7,113 +7,379 @@ import { Sidebar } from './components/Sidebar'
 import { KeyInput } from './components/KeyInput'
 import { UserGuide } from './components/UserGuide'
 import { TimelineEditor } from './components/timeline/TimelineEditor'
+import type { TimelineSourceClip } from './components/timeline/TimelineEditor'
+import { measureMediaSourceDuration } from './components/timeline/mediaUtils'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
-// Interfaces mapping to IPC results
-interface Archive {
-  path: string
-  name: string
-  size: number
-  relative: string
+import { useArchive, usePlaylist } from './hooks'
+import { useUIStore } from './stores'
+import type { ArchiveFile, ArchiveInfo, QueueItem } from './stores'
+
+type FilterType = 'all' | 'video' | 'image' | 'audio'
+type AppView = 'extractor' | 'timeline'
+type ExtractFileWithOutput = (
+  archivePath: string,
+  filename: string,
+  key?: string,
+  outputDir?: string,
+) => Promise<{ success: boolean; outputPath?: string; type?: string; error?: string }>
+
+function getBaseName(path: string): string {
+  return path.split('/').pop()?.split('\\').pop() ?? path
 }
 
-interface RPAFile {
-  name: string
-  size: number
-  type: 'video' | 'image' | 'audio' | 'other'
-  parts: number
+function normalizeSearchText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[\\/_\-.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
-interface QueueItem extends RPAFile {
-  loopCount: number
+function tokenizeSearchText(value: string): string[] {
+  return normalizeSearchText(value).split(' ').filter(Boolean)
+}
+
+function rankFileSearchMatch(file: ArchiveFile, normalizedQuery: string, queryTokens: string[]): number | null {
+  if (!normalizedQuery) {
+    return 0
+  }
+
+  const baseName = getBaseName(file.name)
+  const normalizedBaseName = normalizeSearchText(baseName)
+  const normalizedFullName = normalizeSearchText(file.name)
+  const normalizedPath = normalizeSearchText(file.path)
+  const baseTokens = tokenizeSearchText(baseName)
+  const fullTokens = tokenizeSearchText(file.name)
+
+  let score = -1
+
+  if (normalizedBaseName === normalizedQuery) {
+    score = Math.max(score, 1200)
+  }
+
+  if (normalizedFullName === normalizedQuery) {
+    score = Math.max(score, 1120)
+  }
+
+  if (baseTokens.includes(normalizedQuery)) {
+    score = Math.max(score, 1080)
+  }
+
+  if (fullTokens.includes(normalizedQuery)) {
+    score = Math.max(score, 1040)
+  }
+
+  if (normalizedBaseName.startsWith(normalizedQuery)) {
+    score = Math.max(score, 1000 - Math.min(120, normalizedBaseName.length - normalizedQuery.length))
+  }
+
+  const basePhraseIndex = normalizedBaseName.indexOf(normalizedQuery)
+  if (basePhraseIndex >= 0) {
+    score = Math.max(score, 920 - (basePhraseIndex * 12))
+  }
+
+  const fullNamePhraseIndex = normalizedFullName.indexOf(normalizedQuery)
+  if (fullNamePhraseIndex >= 0) {
+    score = Math.max(score, 760 - (fullNamePhraseIndex * 6))
+  }
+
+  const matchedTokenCount = queryTokens.filter((token) =>
+    fullTokens.some((fullToken) => fullToken === token || fullToken.startsWith(token))
+  ).length
+
+  if (matchedTokenCount === queryTokens.length && queryTokens.length > 1) {
+    score = Math.max(score, 880 + (matchedTokenCount * 20))
+  }
+
+  const basePrefixMatches = queryTokens.filter((token) =>
+    baseTokens.some((baseToken) => baseToken.startsWith(token))
+  ).length
+
+  if (basePrefixMatches > 0) {
+    score = Math.max(score, 700 + (basePrefixMatches * 25))
+  }
+
+  const pathPhraseIndex = normalizedPath.indexOf(normalizedQuery)
+  if (pathPhraseIndex >= 0) {
+    score = Math.max(score, 420 - pathPhraseIndex)
+  }
+
+  return score >= 0 ? score : null
 }
 
 function App() {
-  // Data State
-  const [archives, setArchives] = useState<Archive[]>([])
-  const [selectedArchive, setSelectedArchive] = useState<Archive | null>(null)
-  const [files, setFiles] = useState<RPAFile[]>([])
+  const extractFileWithOutput: ExtractFileWithOutput = window.api.extractFile.bind(window.api)
 
-  // Selection State
-  const [selectedFile, setSelectedFile] = useState<RPAFile | null>(null)       // active preview
-  const [selectedFiles, setSelectedFiles] = useState<RPAFile[]>([])            // multi-select
+  const {
+    archives,
+    selectedArchive,
+    selectedFiles,
+    isLoading,
+    error,
+    setError,
+    scanFolder,
+    scanArchive,
+    selectFile,
+  } = useArchive()
 
-  // Playlist State
-  const [playlist, setPlaylist] = useState<QueueItem[]>([])
-  const [playIndex, setPlayIndex] = useState(-1)
-  const [currentLoop, setCurrentLoop] = useState(1) // Track current loop iteration
+  const {
+    queue,
+    currentIndex,
+    addSelectedToQueue,
+    playItem,
+    removeFromQueue,
+    clearQueue,
+    moveItem,
+    updateQueueItem,
+    playNext,
+    playPrevious,
+    handleVideoEnded,
+  } = usePlaylist()
 
-  // Preview Loop State
+  const {
+    viewMode,
+    searchQuery,
+    setViewMode,
+    setSearchQuery,
+    showUserGuide,
+    toggleUserGuide,
+  } = useUIStore()
+
+  const [localTimelineClips, setLocalTimelineClips] = useState<TimelineSourceClip[]>([])
+  const [showQueue, setShowQueue] = useState(false)
+  const [showKeyInput, setShowKeyInput] = useState(false)
+  const [appView, setAppView] = useState<AppView>('extractor')
+  const [fileListWidth, setFileListWidth] = useState(360)
+  const [filterType, setFilterType] = useState<FilterType>('all')
+  const [hexKey, setHexKey] = useState('')
   const [previewPath, setPreviewPath] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
-  const [triggerReplay, setTriggerReplay] = useState(0) // Signal to replay current video
-
-  // ... (UI State omitted for brevity, keeping same)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [extracting, setExtracting] = useState(false)
-  const [showKeyInput, setShowKeyInput] = useState(false)
-  const [showQueue, setShowQueue] = useState(false)
-  const [showGuide, setShowGuide] = useState(false)
-  const [extractProgress, setExtractProgress] = useState('')
-  const [appView, setAppView] = useState<'extractor' | 'timeline'>('extractor')
-  const [timelineClips, setTimelineClips] = useState<{ file: any; path: string }[]>([])
-
-  // Settings State
-  const [hexKey, setHexKey] = useState('')
-  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list')
   const [autoPlayNext, setAutoPlayNext] = useState(false)
+  const [previewSource, setPreviewSource] = useState<'selection' | 'queue'>('selection')
+  const [queueLoopPass, setQueueLoopPass] = useState(1)
+  const [previewReplayToken, setPreviewReplayToken] = useState(0)
 
-  // Resize state
-  const [fileListWidth, setFileListWidth] = useState(340)
+  const files = selectedArchive?.files ?? []
+  const selectedFilesList = useMemo(
+    () => files.filter((file) => selectedFiles.has(file.path)),
+    [files, selectedFiles]
+  )
 
-  // Filter State
-  const [filterType, setFilterType] = useState<'all' | 'video' | 'image' | 'audio'>('all')
-  const [searchQuery, setSearchQuery] = useState('')
+  const selectedFile = selectedFilesList[0] ?? null
+  const currentQueueItem = currentIndex >= 0 ? queue[currentIndex] ?? null : null
+  const activePreviewItem = previewSource === 'queue'
+    ? currentQueueItem ?? selectedFile
+    : selectedFile ?? currentQueueItem
 
-  // Derived State (memoized for performance)
-  const filteredFiles = useMemo(() => files.filter(f => {
-    // 1. Filter by type
-    if (filterType !== 'all' && f.type !== filterType) return false
+  const filteredFiles = useMemo(() => {
+    const normalizedQuery = normalizeSearchText(searchQuery)
+    const queryTokens = tokenizeSearchText(searchQuery)
 
-    // 2. Filter by search query
-    if (searchQuery) {
-      return f.name.toLowerCase().includes(searchQuery.toLowerCase())
+    const typeFilteredFiles = files.filter((file) => filterType === 'all' || file.type === filterType)
+
+    if (!normalizedQuery) {
+      return typeFilteredFiles
     }
 
-    return true
-  }), [files, filterType, searchQuery])
+    return typeFilteredFiles
+      .map((file, index) => ({
+        file,
+        index,
+        rank: rankFileSearchMatch(file, normalizedQuery, queryTokens),
+      }))
+      .filter((entry): entry is { file: ArchiveFile; index: number; rank: number } => entry.rank !== null)
+      .sort((a, b) => {
+        if (b.rank !== a.rank) {
+          return b.rank - a.rank
+        }
 
-  // Active navigation list: playlist if active, otherwise filtered files
-  const navList = playlist.length > 0 ? playlist : filteredFiles
+        return a.index - b.index
+      })
+      .map((entry) => entry.file)
+  }, [files, filterType, searchQuery])
 
-  // --- Auto-extract preview when file is selected ---
+  const navList = currentQueueItem ? queue : filteredFiles
+
+  const handleSelectFolder = useCallback(async () => {
+    const result = await window.api.selectFolder()
+    if (result.success && result.path) {
+      await scanFolder(result.path)
+    }
+  }, [scanFolder])
+
+  const handleSelectArchive = useCallback(async (archive: ArchiveInfo) => {
+    await scanArchive(archive.path)
+  }, [scanArchive])
+
+  const handleSelectFile = useCallback((file: ArchiveFile, e: React.MouseEvent) => {
+    setPreviewSource('selection')
+    selectFile(file.path, e.ctrlKey || e.metaKey, e.shiftKey)
+  }, [selectFile])
+
+  const handleAddToQueue = useCallback(() => {
+    addSelectedToQueue()
+    setShowQueue(true)
+  }, [addSelectedToQueue])
+
+  const handlePlayQueueItem = useCallback((index: number) => {
+    setPreviewSource('queue')
+    setQueueLoopPass(1)
+    playItem(index)
+  }, [playItem])
+
+  const handleRemoveFromQueue = useCallback((index: number) => {
+    removeFromQueue(index)
+  }, [removeFromQueue])
+
+  const handleClearQueue = useCallback(() => {
+    clearQueue()
+  }, [clearQueue])
+
+  const handleMoveQueueItem = useCallback((fromIndex: number, toIndex: number) => {
+    moveItem(fromIndex, toIndex)
+  }, [moveItem])
+
+  const handleUpdateQueueItem = useCallback((index: number, updates: Partial<QueueItem>) => {
+    updateQueueItem(index, updates)
+  }, [updateQueueItem])
+
+  const handlePlayAll = useCallback(() => {
+    if (queue.length === 0) return
+    setPreviewSource('queue')
+    setQueueLoopPass(1)
+    playItem(0)
+    setAutoPlayNext(true)
+  }, [playItem, queue.length])
+
+  const handleExtractQueue = useCallback(async () => {
+    if (!selectedArchive || queue.length === 0) return
+
+    const output = await window.api.selectOutputFolder()
+    if (!output.success || !output.path) return
+
+    for (const file of queue) {
+      await extractFileWithOutput(selectedArchive.path, file.name, hexKey, output.path)
+    }
+  }, [hexKey, queue, selectedArchive])
+
+  const handleExtractAll = useCallback(async () => {
+    if (!selectedArchive) return
+
+    const output = await window.api.selectOutputFolder()
+    if (!output.success || !output.path) return
+
+    await window.api.extractAll(
+      selectedArchive.path,
+      output.path,
+      hexKey,
+      filterType === 'all' ? undefined : filterType,
+    )
+  }, [filterType, hexKey, selectedArchive])
+
+  const handleExtractSelected = useCallback(async () => {
+    if (!selectedArchive || !selectedFile) return
+
+    const output = await window.api.selectOutputFolder()
+    if (!output.success || !output.path) return
+
+    await extractFileWithOutput(selectedArchive.path, selectedFile.name, hexKey, output.path)
+  }, [hexKey, selectedArchive, selectedFile])
+
+  const handleExtractPreview = useCallback(async () => {
+    if (!selectedArchive || !activePreviewItem) return
+
+    const output = await window.api.selectOutputFolder()
+    if (!output.success || !output.path) return
+
+    await extractFileWithOutput(selectedArchive.path, activePreviewItem.name, hexKey, output.path)
+  }, [activePreviewItem, hexKey, selectedArchive])
+
+  const handleNextFileCallback = useCallback(() => {
+    if (queue.length > 0) {
+      setPreviewSource('queue')
+      setQueueLoopPass(1)
+      playNext()
+      return
+    }
+
+    if (filteredFiles.length === 0) return
+    const currentSelectedIndex = selectedFile
+      ? filteredFiles.findIndex((file) => file.path === selectedFile.path)
+      : -1
+    const nextIndex = currentSelectedIndex >= 0
+      ? (currentSelectedIndex + 1) % filteredFiles.length
+      : 0
+
+    setPreviewSource('selection')
+    selectFile(filteredFiles[nextIndex].path)
+  }, [filteredFiles, playNext, queue.length, selectFile, selectedFile])
+
+  const handlePrevFileCallback = useCallback(() => {
+    if (queue.length > 0) {
+      setPreviewSource('queue')
+      setQueueLoopPass(1)
+      playPrevious()
+      return
+    }
+
+    if (filteredFiles.length === 0) return
+    const currentSelectedIndex = selectedFile
+      ? filteredFiles.findIndex((file) => file.path === selectedFile.path)
+      : -1
+    const prevIndex = currentSelectedIndex > 0
+      ? currentSelectedIndex - 1
+      : filteredFiles.length - 1
+
+    setPreviewSource('selection')
+    selectFile(filteredFiles[prevIndex].path)
+  }, [filteredFiles, playPrevious, queue.length, selectFile, selectedFile])
+
+  const handleVideoEndedCallback = useCallback(() => {
+    if (!autoPlayNext) return
+
+    if (queue.length > 0) {
+      setPreviewSource('queue')
+
+      const loopTarget = Math.max(1, currentQueueItem?.loopCount ?? 1)
+      if (currentQueueItem && queueLoopPass < loopTarget) {
+        setQueueLoopPass((prev) => prev + 1)
+        setPreviewReplayToken((prev) => prev + 1)
+        return
+      }
+
+      setQueueLoopPass(1)
+      handleVideoEnded()
+      return
+    }
+
+    handleNextFileCallback()
+  }, [autoPlayNext, currentQueueItem, handleNextFileCallback, handleVideoEnded, queue.length, queueLoopPass])
+
+  useEffect(() => {
+    setQueueLoopPass(1)
+  }, [currentQueueItem?.id])
+
   useEffect(() => {
     let cancelled = false
 
     const loadPreview = async () => {
-      if (!selectedFile || !selectedArchive) {
+      if (!selectedArchive || !activePreviewItem) {
         setPreviewPath(null)
+        setPreviewLoading(false)
         return
       }
 
       setPreviewLoading(true)
-      setPreviewPath(null)
 
       try {
-        const result = await (window.api as any).extractFile(
-          selectedArchive.path,
-          selectedFile.name,
-          hexKey
-        )
-
-        if (!cancelled && result.success && result.outputPath) {
-          setPreviewPath(result.outputPath)
-        } else if (!cancelled) {
-          console.error('Failed to extract for preview:', result.error)
-        }
-      } catch (e) {
+        const result = await window.api.extractFile(selectedArchive.path, activePreviewItem.name, hexKey)
         if (!cancelled) {
-          console.error('Preview extraction error:', e)
+          setPreviewPath(result.success ? result.outputPath || null : null)
+        }
+      } catch {
+        if (!cancelled) {
+          setPreviewPath(null)
         }
       } finally {
         if (!cancelled) {
@@ -122,375 +388,37 @@ function App() {
       }
     }
 
-    loadPreview()
+    void loadPreview()
 
     return () => {
       cancelled = true
     }
-  }, [selectedFile, selectedArchive, hexKey])
+  }, [activePreviewItem, hexKey, selectedArchive])
 
-  // --- Actions ---
-  // ... (handleSelectFolder, handleSelectArchive omitted - keeping same)
-
-  const handleSelectFolder = async () => {
-    setLoading(true)
-    setError(null)
-    setArchives([])
-    setFiles([])
-    setSelectedArchive(null)
-    setSelectedFile(null)
-    setSelectedFiles([])
-    setPlaylist([])
-    setPlayIndex(-1)
-    setCurrentLoop(1)
-
-    try {
-      const result = await window.api.selectFolder()
-      if (result.success && result.path) {
-        const scanResult = await window.api.scanFolder(result.path)
-        if (scanResult.success && scanResult.archives) {
-          setArchives(scanResult.archives)
-        } else {
-          setError(scanResult.error || 'Failed to scan folder')
-        }
-      }
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleSelectArchive = async (archive: Archive) => {
-    setSelectedArchive(archive)
-    setLoading(true)
-    setError(null)
-    setFiles([])
-    setSelectedFile(null)
-    setSelectedFiles([])
-    setPlaylist([])
-    setPlayIndex(-1)
-    setCurrentLoop(1)
-
-    try {
-      const listResult = await window.api.listArchive(archive.path, hexKey)
-      if (listResult.success && listResult.files) {
-        const mappedFiles: RPAFile[] = listResult.files.map((f: any) => ({
-          name: f.name,
-          size: f.size,
-          type: f.type,
-          parts: f.parts
-        }))
-        setFiles(mappedFiles)
-      } else {
-        setError(listResult.error || 'Failed to list archive. Check encryption key.')
-        if (listResult.error?.includes('zlib') || listResult.error?.includes('pickle')) {
-          setShowKeyInput(true)
-        }
-      }
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // ... (handleSelectFile omitted - keeping same)
-  const handleSelectFile = (file: RPAFile, e: React.MouseEvent) => {
-    if (e.ctrlKey || e.metaKey) {
-      // Toggle this file in selectedFiles
-      setSelectedFiles(prev => {
-        const exists = prev.some(f => f.name === file.name)
-        if (exists) {
-          return prev.filter(f => f.name !== file.name)
-        } else {
-          return [...prev, file]
-        }
-      })
-      // Also set as active preview
-      setSelectedFile(file)
-    } else if (e.shiftKey && selectedFile) {
-      // Range select
-      const startIdx = filteredFiles.findIndex(f => f.name === selectedFile.name)
-      const endIdx = filteredFiles.findIndex(f => f.name === file.name)
-      if (startIdx >= 0 && endIdx >= 0) {
-        const min = Math.min(startIdx, endIdx)
-        const max = Math.max(startIdx, endIdx)
-        const range = filteredFiles.slice(min, max + 1)
-        setSelectedFiles(prev => {
-          const existing = new Set(prev.map(f => f.name))
-          const merged = [...prev]
-          range.forEach(f => {
-            if (!existing.has(f.name)) {
-              merged.push(f)
-            }
-          })
-          return merged
-        })
-      }
-      setSelectedFile(file)
-    } else {
-      // Normal click - single select, clear multi-select
-      setSelectedFile(file)
-      setSelectedFiles([])
-    }
-  }
-
-  // --- Playlist Actions ---
-  const handleAddToQueue = useCallback(() => {
-    // Helper to create QueueItem
-    const toQueueItem = (f: RPAFile): QueueItem => ({ ...f, loopCount: 1 })
-
-    if (selectedFiles.length === 0 && selectedFile) {
-      setPlaylist(prev => {
-        if (prev.some(f => f.name === selectedFile.name)) return prev
-        return [...prev, toQueueItem(selectedFile)]
-      })
-    } else if (selectedFiles.length > 0) {
-      setPlaylist(prev => {
-        const existing = new Set(prev.map(f => f.name))
-        const newItems = selectedFiles
-          .filter(f => !existing.has(f.name))
-          .map(toQueueItem)
-        return [...prev, ...newItems]
-      })
-    }
-    setShowQueue(true)
-    setSelectedFiles([])
-  }, [selectedFile, selectedFiles])
-
-  const handleUpdateQueueItem = (index: number, updates: Partial<QueueItem>) => {
-    setPlaylist(prev => {
-      const next = [...prev]
-      next[index] = { ...next[index], ...updates }
-      return next
-    })
-  }
-
-  const handlePlayQueueItem = (index: number) => {
-    setPlayIndex(index)
-    setSelectedFile(playlist[index])
-    setCurrentLoop(1) // Reset loop on manual play
-  }
-
-  const handleRemoveFromQueue = (index: number) => {
-    setPlaylist(prev => {
-      const next = [...prev]
-      next.splice(index, 1)
-      return next
-    })
-    if (playIndex >= index) {
-      // Adjust playIndex if we removed current or previous item
-      if (playIndex === index) {
-        setPlayIndex(-1) // stop playing if removed current
-      } else {
-        setPlayIndex(prev => prev - 1)
-      }
-    }
-  }
-
-  const handleClearQueue = () => {
-    setPlaylist([])
-    setPlayIndex(-1)
-    setCurrentLoop(1)
-  }
-
-  const handleReorderQueue = (newQueue: QueueItem[]) => {
-    setPlaylist(newQueue)
-    // If playing, we need to find where the playing item moved (complex, simplifiction: stop or keep index?)
-    // For now, keep index but it might point to different file. 
-    // Ideally we track by ID/Name but duplicates allowed?
-    // Let's just reset playIndex for simplicity or let user deal with it.
-  }
-
-  const handlePlayAll = () => {
-    if (playlist.length === 0) return
-    setPlayIndex(0)
-    setSelectedFile(playlist[0])
-    setCurrentLoop(1)
-    setAutoPlayNext(true)
-  }
-
-  const handleExtractQueue = async () => {
-    if (!selectedArchive || playlist.length === 0) return
-
-    const folderResult = await window.api.selectOutputFolder()
-    if (!folderResult.success || !folderResult.path) return
-
-    setExtracting(true)
-    setExtractProgress(`Extracting 0/${playlist.length}...`)
-    let successCount = 0
-
-    try {
-      for (let i = 0; i < playlist.length; i++) {
-        setExtractProgress(`Extracting ${i + 1}/${playlist.length}...`)
-        try {
-          const file = playlist[i]
-          // Ensure we only use the filename, not the full internal path
-          const baseName = file.name.split(/[/\\]/).pop()
-          const outputName = `${i + 1}_${baseName}`
-
-          const result = await (window.api as any).extractFile(
-            selectedArchive.path,
-            file.name,
-            hexKey,
-            folderResult.path,
-            outputName
-          )
-          if (result.success) successCount++
-        } catch (e) {
-          console.error(`Failed to extract ${playlist[i].name}:`, e)
-        }
-      }
-      alert(`Extracted ${successCount}/${playlist.length} queued files to ${folderResult.path}`)
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setExtracting(false)
-      setExtractProgress('')
-    }
-  }
-
-  // Navigation Logic — follows playlist if active, otherwise filtered files
-  const handleNextFile = useCallback(() => {
-    setCurrentLoop(1) // Reset loop on manual next
-    if (playlist.length > 0) {
-      const nextIdx = playIndex + 1
-      if (nextIdx < playlist.length) {
-        setPlayIndex(nextIdx)
-        setSelectedFile(playlist[nextIdx])
-      }
-    } else {
-      if (!selectedFile || filteredFiles.length === 0) return
-      const currentIndex = filteredFiles.findIndex(f => f.name === selectedFile.name)
-      if (currentIndex >= 0 && currentIndex < filteredFiles.length - 1) {
-        setSelectedFile(filteredFiles[currentIndex + 1])
-      }
-    }
-  }, [selectedFile, filteredFiles, playlist, playIndex])
-
-  const handleVideoEnded = useCallback(() => {
-    if (!autoPlayNext) return
-
-    if (playlist.length > 0 && playIndex >= 0 && playIndex < playlist.length) {
-      const item = playlist[playIndex]
-      if (currentLoop < item.loopCount) {
-        setCurrentLoop(prev => prev + 1)
-        setTriggerReplay(prev => prev + 1) // Signal to replay
-      } else {
-        // Loop finished, go next
-        setCurrentLoop(1)
-        const nextIdx = playIndex + 1
-        if (nextIdx < playlist.length) {
-          setPlayIndex(nextIdx)
-          setSelectedFile(playlist[nextIdx])
-        }
-      }
-    } else {
-      // Normal auto-next for file list (no looping supported there yet)
-      handleNextFile()
-    }
-  }, [autoPlayNext, playlist, playIndex, currentLoop, handleNextFile])
-
-  const handlePrevFile = useCallback(() => {
-    setCurrentLoop(1) // Reset
-    if (playlist.length > 0) {
-      const prevIdx = playIndex - 1
-      if (prevIdx >= 0) {
-        setPlayIndex(prevIdx)
-        setSelectedFile(playlist[prevIdx])
-      }
-    } else {
-      if (!selectedFile || filteredFiles.length === 0) return
-      const currentIndex = filteredFiles.findIndex(f => f.name === selectedFile.name)
-      if (currentIndex > 0) {
-        setSelectedFile(filteredFiles[currentIndex - 1])
-      }
-    }
-  }, [selectedFile, filteredFiles, playlist, playIndex])
-
-  // Keyboard Navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
 
       if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
         e.preventDefault()
-        handleNextFile()
+        handleNextFileCallback()
       } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
         e.preventDefault()
-        handlePrevFile()
+        handlePrevFileCallback()
       } else if (e.key === 'q' || e.key === 'Q') {
         e.preventDefault()
         handleAddToQueue()
       } else if (e.key === '?') {
         e.preventDefault()
-        setShowGuide(g => !g)
+        toggleUserGuide()
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleNextFile, handlePrevFile, handleAddToQueue])
+  }, [handleAddToQueue, handleNextFileCallback, handlePrevFileCallback, toggleUserGuide])
 
-
-  const handleExtractAll = async () => {
-    if (!selectedArchive) return
-
-    const folderResult = await window.api.selectOutputFolder()
-    if (!folderResult.success || !folderResult.path) return
-
-    setExtracting(true)
-    setError(null)
-    try {
-      const result = await window.api.extractAll(
-        selectedArchive.path,
-        folderResult.path,
-        hexKey,
-        filterType === 'all' ? undefined : filterType
-      )
-
-      if (result.success) {
-        alert(`Successfully extracted ${result.extractedCount} files to ${folderResult.path}`)
-      } else {
-        setError(result.error || 'Extraction failed')
-      }
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setExtracting(false)
-    }
-  }
-
-  const handleExtractSelected = async () => {
-    if (!selectedArchive || !selectedFile) return
-
-    const folderResult = await window.api.selectOutputFolder()
-    if (!folderResult.success || !folderResult.path) return
-
-    setExtracting(true)
-    try {
-      const result = await (window.api as any).extractFile(
-        selectedArchive.path,
-        selectedFile.name,
-        hexKey,
-        folderResult.path
-      )
-
-      if (result.success) {
-        alert(`Extracted ${selectedFile.name} to ${folderResult.path}`)
-      } else {
-        setError(result.error || 'Failed to extract file')
-      }
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setExtracting(false)
-    }
-  }
-
-  // Resize handler
-  const handleResizeStart = (e: React.MouseEvent) => {
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     const startX = e.clientX
     const startWidth = fileListWidth
@@ -512,166 +440,168 @@ function App() {
     document.addEventListener('mouseup', onMouseUp)
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
-  }
+  }, [fileListWidth])
 
-  const currentNavIndex = playlist.length > 0
-    ? playIndex
-    : (selectedFile ? navList.findIndex(f => f.name === selectedFile.name) : -1)
+  const currentNavIndex = currentQueueItem
+    ? currentIndex
+    : (selectedFile ? navList.findIndex((file) => file.path === selectedFile.path) : -1)
   const totalNavItems = navList.length
 
-  // --- Open Timeline Editor ---
-  const handleOpenEditor = async () => {
-    if (!selectedArchive || playlist.length === 0) return
-    // Extract all queued files to temp dir for timeline
-    const clips: { file: any; path: string }[] = []
-    for (const file of playlist) {
+  const handleOpenEditor = useCallback(async () => {
+    if (!selectedArchive || queue.length === 0) return
+
+    const clips: TimelineSourceClip[] = []
+    for (const file of queue) {
       try {
-        const result = await (window.api as any).extractFile(
+        const result = await window.api.extractFile(
           selectedArchive.path,
           file.name,
-          hexKey
+          hexKey,
         )
+
         if (result.success && result.outputPath) {
-          clips.push({ file, path: result.outputPath })
+          const sourceDuration = await measureMediaSourceDuration(result.outputPath, file.type)
+          const repeatCount = Math.max(1, file.loopCount || 1)
+
+          for (let repeatIndex = 0; repeatIndex < repeatCount; repeatIndex += 1) {
+            clips.push({ file, path: result.outputPath, sourceDuration })
+          }
         }
       } catch (e) {
         console.error(`Failed to extract ${file.name} for timeline:`, e)
       }
     }
+
     if (clips.length > 0) {
-      setTimelineClips(clips)
+      setLocalTimelineClips(clips)
       setAppView('timeline')
     }
-  }
+  }, [hexKey, queue, selectedArchive])
 
-  // --- Timeline Editor View ---
+  const folderPath = archives.length > 0
+    ? archives[0].path.split(/[\\/]/).slice(0, -1).join('/')
+    : null
+
+  const handleTimelineExport = useCallback(() => {
+    setError('Timeline export backend belum tersedia. Tombol export sudah disiapkan di editor, tapi proses render/export final belum terhubung.')
+  }, [setError])
+
   if (appView === 'timeline') {
     return (
       <TimelineEditor
-        initialClips={timelineClips}
+        initialClips={localTimelineClips}
         onBack={() => setAppView('extractor')}
+        onExport={handleTimelineExport}
       />
     )
   }
 
   return (
-    <div className="app">
-      {/* Sidebar */}
-      <Sidebar
-        archives={archives}
-        selectedArchive={selectedArchive}
-        onSelectFolder={handleSelectFolder}
-        onSelectArchive={handleSelectArchive}
-        onShowKeyInput={() => setShowKeyInput(true)}
-        encryptionKey={hexKey}
-        folderPath={archives.length > 0 ? archives[0].path.split(/[\\/]/).slice(0, -1).join('/') : null}
-      />
-
-      {/* Main Content */}
-      <main className="main-content">
-        {error && (
-          <div className="error-banner">
-            <span className="error-icon">⚠️</span>
-            <span>{error}</span>
-            <button className="error-close" onClick={() => setError(null)}>✖</button>
-          </div>
-        )}
-
-        {extractProgress && (
-          <div className="extract-progress">
-            <div className="spinner"></div>
-            <span>{extractProgress}</span>
-          </div>
-        )}
-
-        {loading && <div className="loading-overlay"><div className="spinner"></div></div>}
-
-        <div className="content-panels">
-          {/* File List */}
-          <div className="file-list-wrapper" style={{ width: fileListWidth, minWidth: 220, maxWidth: 600 }}>
-            <FileList
-              files={filteredFiles}
-              totalFiles={files.length}
-              selectedFile={selectedFile}
-              selectedFiles={selectedFiles}
-              archiveVersion=""
-              filterType={filterType}
-              viewMode={viewMode}
-              onFilterChange={setFilterType}
-              onViewModeChange={setViewMode}
-              onSelectFile={handleSelectFile}
-              onExtractAll={handleExtractAll}
-              onExtractSelected={handleExtractSelected}
-              hasArchive={!!selectedArchive}
-              extracting={extracting}
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-            />
-          </div>
-
-          {/* Resize Handle */}
-          <div className="resize-handle" onMouseDown={handleResizeStart}>
-            <div className="resize-handle-line"></div>
-          </div>
-
-          {/* Right Panel: Preview + Queue */}
-          <div className="right-panel">
-            {/* Preview */}
-            {/* Preview */}
-            <VideoPreview
-              filePath={previewPath}
-              fileType={selectedFile?.type || 'other'}
-              fileName={selectedFile?.name || null}
-              isLoading={previewLoading}
-              autoPlayNext={autoPlayNext}
-              onToggleAutoPlay={() => setAutoPlayNext(!autoPlayNext)}
-              onNext={handleNextFile}
-              onPrev={handlePrevFile}
-              onExtract={handleExtractSelected}
-              navIndex={currentNavIndex}
-              navTotal={totalNavItems}
-              onAddToQueue={handleAddToQueue}
-              hasSelection={selectedFiles.length > 0 || !!selectedFile}
-              onToggleQueue={() => setShowQueue(!showQueue)}
-              showQueue={showQueue}
-              queueLength={playlist.length}
-              onEnded={handleVideoEnded}
-              triggerReplay={triggerReplay}
-            />
-
-            {/* Play Queue (collapsible) */}
-            {showQueue && (
-              <PlayQueue
-                queue={playlist}
-                currentIndex={playIndex}
-                onReorder={handleReorderQueue}
-                onPlay={handlePlayQueueItem}
-                onRemove={handleRemoveFromQueue}
-                onClear={handleClearQueue}
-                onPlayAll={handlePlayAll}
-                onExtractQueue={handleExtractQueue}
-                extracting={extracting}
-                onOpenEditor={handleOpenEditor}
-                onUpdateQueueItem={handleUpdateQueueItem}
-              />
-            )}
-          </div>
-        </div>
-      </main>
-
-      {/* Modals */}
-      {showKeyInput && (
-        <KeyInput
-          currentKey={hexKey}
-          onApply={(key) => {
-            setHexKey(key)
-            setShowKeyInput(false)
-          }}
-          onClose={() => setShowKeyInput(false)}
+    <ErrorBoundary>
+      <div className="app">
+        <Sidebar
+          archives={archives}
+          selectedArchive={selectedArchive}
+          onSelectFolder={handleSelectFolder}
+          onSelectArchive={handleSelectArchive}
+          onShowKeyInput={() => setShowKeyInput(true)}
+          encryptionKey={hexKey}
+          folderPath={folderPath}
         />
-      )}
-      {showGuide && <UserGuide onClose={() => setShowGuide(false)} />}
-    </div>
+
+        <main className="main-content">
+          {error && (
+            <div className="error-banner">
+              <span className="error-icon">⚠️</span>
+              <span>{error}</span>
+              <button className="error-close" onClick={() => setError(null)}>✖</button>
+            </div>
+          )}
+
+          {isLoading && <div className="loading-overlay"><div className="spinner"></div></div>}
+
+          <div className="content-panels">
+            <div className="file-list-wrapper" style={{ width: fileListWidth, minWidth: 220, maxWidth: 600 }}>
+              <FileList
+                files={filteredFiles}
+                totalFiles={files.length}
+                selectedFile={selectedFile}
+                selectedFiles={selectedFilesList}
+                archiveVersion=""
+                filterType={filterType}
+                viewMode={viewMode}
+                onFilterChange={setFilterType}
+                onViewModeChange={setViewMode}
+                onSelectFile={handleSelectFile}
+                onExtractAll={handleExtractAll}
+                onExtractSelected={handleExtractSelected}
+                onQueueSelected={handleAddToQueue}
+                onOpenHelp={toggleUserGuide}
+                hasArchive={!!selectedArchive}
+                extracting={isLoading}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+              />
+            </div>
+
+            <div className="resize-handle" onMouseDown={handleResizeStart}>
+              <div className="resize-handle-line"></div>
+            </div>
+
+            <div className="right-panel">
+              <VideoPreview
+                filePath={previewPath}
+                fileType={activePreviewItem?.type || 'other'}
+                fileName={activePreviewItem?.name || null}
+                isLoading={previewLoading}
+                autoPlayNext={autoPlayNext}
+                onToggleAutoPlay={() => setAutoPlayNext(!autoPlayNext)}
+                onNext={handleNextFileCallback}
+                onPrev={handlePrevFileCallback}
+                onExtract={handleExtractPreview}
+                navIndex={currentNavIndex}
+                navTotal={totalNavItems}
+                onAddToQueue={handleAddToQueue}
+                hasSelection={selectedFilesList.length > 0}
+                onToggleQueue={() => setShowQueue(!showQueue)}
+                showQueue={showQueue}
+                queueLength={queue.length}
+                onEnded={handleVideoEndedCallback}
+                triggerReplay={previewReplayToken}
+              />
+
+              {showQueue && (
+                <PlayQueue
+                  queue={queue}
+                  currentIndex={currentIndex}
+                  onMoveItem={handleMoveQueueItem}
+                  onPlay={handlePlayQueueItem}
+                  onRemove={handleRemoveFromQueue}
+                  onClear={handleClearQueue}
+                  onPlayAll={handlePlayAll}
+                  onExtractQueue={handleExtractQueue}
+                  extracting={isLoading}
+                  onOpenEditor={handleOpenEditor}
+                  onUpdateQueueItem={handleUpdateQueueItem}
+                />
+              )}
+            </div>
+          </div>
+        </main>
+
+        {showKeyInput && (
+          <KeyInput
+            currentKey={hexKey}
+            onApply={(key) => {
+              setHexKey(key)
+              setShowKeyInput(false)
+            }}
+            onClose={() => setShowKeyInput(false)}
+          />
+        )}
+        {showUserGuide && <UserGuide onClose={toggleUserGuide} />}
+      </div>
+    </ErrorBoundary>
   )
 }
 

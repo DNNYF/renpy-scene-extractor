@@ -14,7 +14,7 @@ interface ElectronApi {
         files?: Array<{ name: string; size: number; type: string; parts: number }>;
         error?: string;
     }>;
-    extractFile: (archivePath: string, filename: string, key?: string) => Promise<{
+    extractFile: (archivePath: string, filename: string, key?: string, outputDir?: string) => Promise<{
         success: boolean;
         outputPath?: string;
         type?: string;
@@ -27,6 +27,7 @@ interface ElectronApi {
         error?: string;
     }>;
     selectOutputFolder: () => Promise<{ success: boolean; canceled?: boolean; path?: string }>;
+    importMedia: () => Promise<{ success: boolean; canceled?: boolean; filePath?: string; fileName?: string; type?: string }>;
 }
 
 declare global {
