@@ -22,6 +22,121 @@ let win: BrowserWindow | null
 let pythonProcess: ChildProcess | null = null
 let requestId = 0
 const pendingRequests = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>()
+let previewTempRoot: string | null = null
+let previewSessionDir: string | null = null
+const PREVIEW_SESSION_MARKER = 'session.json'
+const STALE_PREVIEW_SESSION_MS = 12 * 60 * 60 * 1000
+
+function getPreviewTempRoot(): string {
+  if (!previewTempRoot) {
+    previewTempRoot = path.join(app.getPath('temp'), 'rpa-extractor')
+  }
+  return previewTempRoot
+}
+
+function ensurePreviewSessionDir(): string {
+  if (previewSessionDir && fs.existsSync(previewSessionDir)) {
+    return previewSessionDir
+  }
+
+  const tempRoot = getPreviewTempRoot()
+  fs.mkdirSync(tempRoot, { recursive: true })
+  previewSessionDir = fs.mkdtempSync(path.join(tempRoot, 'session-'))
+  fs.writeFileSync(path.join(previewSessionDir, PREVIEW_SESSION_MARKER), JSON.stringify({
+    pid: process.pid,
+    createdAt: Date.now(),
+  }))
+  return previewSessionDir
+}
+
+function isPidRunning(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false
+  }
+
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function isStalePreviewSession(entryPath: string): boolean {
+  const markerPath = path.join(entryPath, PREVIEW_SESSION_MARKER)
+
+  try {
+    if (!fs.existsSync(markerPath)) {
+      return true
+    }
+
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf-8')) as { pid?: number; createdAt?: number }
+    if (typeof marker.pid !== 'number') {
+      return true
+    }
+
+    if (isPidRunning(marker.pid)) {
+      return false
+    }
+
+    const createdAt = typeof marker.createdAt === 'number' ? marker.createdAt : 0
+    const ageMs = Date.now() - createdAt
+
+    if (createdAt > 0) {
+      return ageMs > STALE_PREVIEW_SESSION_MS
+    }
+
+    const stat = fs.statSync(entryPath)
+    return Date.now() - stat.mtimeMs > STALE_PREVIEW_SESSION_MS
+  } catch {
+    try {
+      const stat = fs.statSync(entryPath)
+      return Date.now() - stat.mtimeMs > STALE_PREVIEW_SESSION_MS
+    } catch {
+      return false
+    }
+  }
+}
+
+function cleanupPreviewTempRoot() {
+  const tempRoot = getPreviewTempRoot()
+  if (!fs.existsSync(tempRoot)) {
+    return
+  }
+
+  for (const entry of fs.readdirSync(tempRoot, { withFileTypes: true })) {
+    const entryPath = path.join(tempRoot, entry.name)
+    if (previewSessionDir && path.resolve(entryPath) === path.resolve(previewSessionDir)) {
+      continue
+    }
+
+    if (entry.isDirectory() && entry.name.startsWith('session-')) {
+      if (!isStalePreviewSession(entryPath)) {
+        continue
+      }
+    } else {
+      try {
+        const stat = fs.statSync(entryPath)
+        if (Date.now() - stat.mtimeMs <= STALE_PREVIEW_SESSION_MS) {
+          continue
+        }
+      } catch {
+        continue
+      }
+    }
+
+    fs.rmSync(entryPath, { recursive: true, force: true })
+  }
+}
+
+function cleanupPreviewSessionDir() {
+  if (!previewSessionDir) {
+    return
+  }
+
+  fs.rmSync(previewSessionDir, { recursive: true, force: true })
+  previewSessionDir = null
+}
 
 function getBundledBinaryPath(...segments: string[]): string | null {
   const candidate = path.join(process.resourcesPath, ...segments)
@@ -158,7 +273,7 @@ function registerIpcHandlers() {
 
   // Extract a single file (for preview or export)
   ipcMain.handle('extract-file', async (_event, archivePath: string, filename: string, key?: string, outputDir?: string, outputFilename?: string) => {
-    const targetDir = outputDir || path.join(app.getPath('temp'), 'rpa-extractor')
+    const targetDir = outputDir || ensurePreviewSessionDir()
     return sendPythonCommand('extract', {
       path: archivePath,
       filename,
@@ -364,6 +479,7 @@ app.on('window-all-closed', () => {
   if (pythonProcess && !pythonProcess.killed) {
     pythonProcess.kill()
   }
+  cleanupPreviewSessionDir()
   if (process.platform !== 'darwin') {
     app.quit()
     win = null
@@ -376,11 +492,17 @@ app.on('activate', () => {
   }
 })
 
+app.on('before-quit', () => {
+  cleanupPreviewSessionDir()
+})
+
 app.whenReady().then(async () => {
   if (!await checkDependencies()) {
     app.quit()
     return
   }
+  ensurePreviewSessionDir()
+  cleanupPreviewTempRoot()
   createMenu()
   registerIpcHandlers()
   createWindow()

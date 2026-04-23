@@ -138,7 +138,7 @@ export const Sidebar: FC<SidebarProps> = ({
                                         type="button"
                                         className="archive-button"
                                         onClick={() => onSelectArchive(archive)}
-                                        title={`${archive.name}\n${archive.relative || archive.path}`}
+                                        title={`${archive.name}\n${filesLabel}\n${archiveLabel}`}
                                     >
                                         <span className="archive-icon">📦</span>
                                         {!collapsed && (
@@ -151,7 +151,6 @@ export const Sidebar: FC<SidebarProps> = ({
                                                     <span className="archive-stat">{filesLabel}</span>
                                                     <span className="archive-stat">{archiveLabel}</span>
                                                 </div>
-                                                <span className="archive-meta">{archive.relative || archive.path}</span>
                                             </div>
                                         )}
                                     </button>

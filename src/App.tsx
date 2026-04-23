@@ -9,12 +9,15 @@ import { UserGuide } from './components/UserGuide'
 import { TimelineEditor } from './components/timeline/TimelineEditor'
 import type { TimelineSourceClip } from './components/timeline/TimelineEditor'
 import type { TimelineExportProject } from './components/timeline/TimelineEditor'
+import type { Track } from './components/timeline/TimelineEditor'
+import { createTracksFromSourceClips, appendSourceClipsToTracks } from './components/timeline/TimelineEditor'
 import { measureMediaSourceDuration } from './components/timeline/mediaUtils'
 import { ErrorBoundary } from './components/ErrorBoundary'
 
 import { useArchive, usePlaylist } from './hooks'
 import { useUIStore } from './stores'
 import type { ArchiveFile, ArchiveInfo, QueueItem } from './stores'
+import { buildImageSequenceMap } from './utils/imageSequence'
 
 type FilterType = 'all' | 'video' | 'image' | 'audio'
 type AppView = 'extractor' | 'timeline'
@@ -160,6 +163,7 @@ function App() {
   } = useUIStore()
 
   const [localTimelineClips, setLocalTimelineClips] = useState<TimelineSourceClip[]>([])
+  const [timelineDraftTracks, setTimelineDraftTracks] = useState<Track[] | null>(null)
   const [showQueue, setShowQueue] = useState(false)
   const [showKeyInput, setShowKeyInput] = useState(false)
   const [appView, setAppView] = useState<AppView>('extractor')
@@ -185,6 +189,8 @@ function App() {
   const activePreviewItem = previewSource === 'queue'
     ? currentQueueItem ?? selectedFile
     : selectedFile ?? currentQueueItem
+  const imageSequenceMap = useMemo(() => buildImageSequenceMap(queue), [queue])
+  const activeImageSequence = activePreviewItem ? imageSequenceMap.get(activePreviewItem.path) : undefined
 
   const filteredFiles = useMemo(() => {
     const normalizedQuery = normalizeSearchText(searchQuery)
@@ -483,6 +489,7 @@ function App() {
     if (!selectedArchive || queue.length === 0) return
 
     const clips: TimelineSourceClip[] = []
+
     for (const file of queue) {
       try {
         const result = await window.api.extractFile(
@@ -492,11 +499,18 @@ function App() {
         )
 
         if (result.success && result.outputPath) {
+          const imageSequence = imageSequenceMap.get(file.path)
           const sourceDuration = await measureMediaSourceDuration(result.outputPath, file.type)
           const repeatCount = Math.max(1, file.loopCount || 1)
 
           for (let repeatIndex = 0; repeatIndex < repeatCount; repeatIndex += 1) {
-            clips.push({ file, path: result.outputPath, sourceDuration })
+            clips.push({
+              file,
+              path: result.outputPath,
+              sourceDuration,
+              displayDuration: imageSequence?.frameDuration,
+              sourceQueueKey: `${file.id}::${repeatIndex}`,
+            })
           }
         }
       } catch (e) {
@@ -506,9 +520,27 @@ function App() {
 
     if (clips.length > 0) {
       setLocalTimelineClips(clips)
+
+      const existingImportedKeys = new Set(
+        (timelineDraftTracks ?? [])
+          .flatMap((track) => track.clips)
+          .map((clip) => clip.sourceQueueKey)
+          .filter((key): key is string => Boolean(key))
+      )
+
+      const freshClips = clips.filter((clip) => clip.sourceQueueKey && !existingImportedKeys.has(clip.sourceQueueKey))
+
+      if (timelineDraftTracks) {
+        if (freshClips.length > 0) {
+          setTimelineDraftTracks((prevTracks) => prevTracks ? appendSourceClipsToTracks(prevTracks, freshClips) : createTracksFromSourceClips(clips))
+        }
+      } else {
+        setTimelineDraftTracks(createTracksFromSourceClips(clips))
+      }
+
       setAppView('timeline')
     }
-  }, [hexKey, queue, selectedArchive])
+  }, [hexKey, imageSequenceMap, queue, selectedArchive, timelineDraftTracks])
 
   const handleTimelineExport = useCallback(async (project: TimelineExportProject) => {
     const result = await exportTimeline(project as unknown as Record<string, unknown>)
@@ -524,6 +556,8 @@ function App() {
     return (
       <TimelineEditor
         initialClips={localTimelineClips}
+        initialTracks={timelineDraftTracks}
+        onTracksChange={setTimelineDraftTracks}
         onBack={() => setAppView('extractor')}
         onExport={handleTimelineExport}
       />
@@ -606,6 +640,7 @@ function App() {
                 navigationTarget={effectiveNavTarget}
                 onEnded={handleVideoEndedCallback}
                 triggerReplay={previewReplayToken}
+                imageSequenceFrameDuration={previewSource === 'queue' ? activeImageSequence?.frameDuration ?? null : null}
               />
 
               {showQueue && (

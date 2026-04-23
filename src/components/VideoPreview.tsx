@@ -1,4 +1,4 @@
-import { ChangeEvent, FC, useCallback, useEffect, useRef, useState } from 'react'
+import { ChangeEvent, FC, KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { buildLocalFileUrl } from './timeline/mediaUtils'
 
 interface VideoPreviewProps {
@@ -22,6 +22,7 @@ interface VideoPreviewProps {
     navigationTarget: 'files' | 'queue'
     onEnded?: () => void
     triggerReplay?: number
+    imageSequenceFrameDuration?: number | null
 }
 
 function formatPlaybackTime(seconds: number): string {
@@ -61,11 +62,14 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
     previewSource,
     navigationTarget,
     onEnded,
-    triggerReplay
+    triggerReplay,
+    imageSequenceFrameDuration = null,
 }) => {
     const videoRef = useRef<HTMLVideoElement>(null)
     const audioRef = useRef<HTMLAudioElement>(null)
     const playerShellRef = useRef<HTMLDivElement>(null)
+    const centerControlTimeoutRef = useRef<number | null>(null)
+    const imageSequenceTimeoutRef = useRef<number | null>(null)
 
     const [error, setError] = useState(false)
     const [isPlaying, setIsPlaying] = useState(false)
@@ -74,11 +78,27 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
     const [volume, setVolume] = useState(1)
     const [isMuted, setIsMuted] = useState(false)
     const [isFullscreen, setIsFullscreen] = useState(false)
+    const [isCenterControlVisible, setIsCenterControlVisible] = useState(true)
 
     const navigationLabel = navigationTarget === 'queue' && queueLength > 0 ? 'Queue' : 'Files'
     const previewSourceLabel = previewSource === 'queue' ? 'Queue item' : 'File selection'
     const fileLabel = fileName ? fileName.split('/').pop() : ''
     const isPlayableMedia = fileType === 'video' || fileType === 'audio'
+    const isAnimatedImage = fileType === 'image' && Number.isFinite(imageSequenceFrameDuration) && (imageSequenceFrameDuration ?? 0) > 0
+
+    const clearCenterControlTimeout = useCallback(() => {
+        if (centerControlTimeoutRef.current !== null) {
+            window.clearTimeout(centerControlTimeoutRef.current)
+            centerControlTimeoutRef.current = null
+        }
+    }, [])
+
+    const clearImageSequenceTimeout = useCallback(() => {
+        if (imageSequenceTimeoutRef.current !== null) {
+            window.clearTimeout(imageSequenceTimeoutRef.current)
+            imageSequenceTimeoutRef.current = null
+        }
+    }, [])
 
     const getMediaElement = useCallback((): HTMLMediaElement | null => {
         if (fileType === 'video') {
@@ -111,6 +131,8 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
         setError(false)
         setCurrentTime(0)
         setDuration(0)
+        setIsCenterControlVisible(true)
+        clearCenterControlTimeout()
 
         const mediaElement = getMediaElement()
         if (!mediaElement) {
@@ -120,7 +142,7 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
 
         mediaElement.load()
         syncMediaState(mediaElement)
-    }, [filePath, fileType, getMediaElement, syncMediaState])
+    }, [clearCenterControlTimeout, filePath, fileType, getMediaElement, syncMediaState])
 
     useEffect(() => {
         const mediaElement = getMediaElement()
@@ -156,6 +178,75 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
         document.addEventListener('fullscreenchange', handleFullscreenChange)
         return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
     }, [])
+
+    const scheduleCenterControlHide = useCallback(() => {
+        clearCenterControlTimeout()
+
+        const mediaElement = getMediaElement()
+        if (!isPlayableMedia || !mediaElement || mediaElement.paused || mediaElement.ended) {
+            return
+        }
+
+        centerControlTimeoutRef.current = window.setTimeout(() => {
+            setIsCenterControlVisible(false)
+            centerControlTimeoutRef.current = null
+        }, 2000)
+    }, [clearCenterControlTimeout, getMediaElement, isPlayableMedia])
+
+    const revealCenterControl = useCallback(() => {
+        if (!isPlayableMedia || error) {
+            return
+        }
+
+        setIsCenterControlVisible(true)
+        scheduleCenterControlHide()
+    }, [error, isPlayableMedia, scheduleCenterControlHide])
+
+    useEffect(() => {
+        if (!isPlayableMedia || error || !isPlaying) {
+            setIsCenterControlVisible(true)
+            clearCenterControlTimeout()
+            return
+        }
+
+        scheduleCenterControlHide()
+        return clearCenterControlTimeout
+    }, [clearCenterControlTimeout, error, isPlayableMedia, isPlaying, scheduleCenterControlHide])
+
+    useEffect(() => {
+        if (!isFullscreen) {
+            return
+        }
+
+        playerShellRef.current?.focus({ preventScroll: true })
+        revealCenterControl()
+    }, [isFullscreen, revealCenterControl])
+
+    useEffect(() => {
+        return () => {
+            clearCenterControlTimeout()
+            clearImageSequenceTimeout()
+        }
+    }, [clearCenterControlTimeout, clearImageSequenceTimeout])
+
+    useEffect(() => {
+        clearImageSequenceTimeout()
+
+        if (!isAnimatedImage || !autoPlayNext || !onEnded) {
+            return
+        }
+
+        const frameDuration = imageSequenceFrameDuration ?? 0
+        if (frameDuration <= 0) {
+            return
+        }
+
+        imageSequenceTimeoutRef.current = window.setTimeout(() => {
+            onEnded()
+        }, frameDuration * 1000)
+
+        return clearImageSequenceTimeout
+    }, [autoPlayNext, clearImageSequenceTimeout, imageSequenceFrameDuration, isAnimatedImage, onEnded, triggerReplay, filePath])
 
     const handleEnded = useCallback(() => {
         setIsPlaying(false)
@@ -239,22 +330,58 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
         }
     }, [])
 
+    const handlePlayerActivity = useCallback(() => {
+        revealCenterControl()
+    }, [revealCenterControl])
+
+    const handlePlayerShellKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+        if (!isFullscreen) {
+            return
+        }
+
+        if (
+            event.target instanceof HTMLInputElement
+            || event.target instanceof HTMLTextAreaElement
+            || event.target instanceof HTMLSelectElement
+            || (event.target instanceof HTMLElement && event.target.isContentEditable)
+        ) {
+            return
+        }
+
+        const normalizedKey = event.key.toLowerCase()
+
+        if (event.key === 'ArrowLeft' || normalizedKey === 'a') {
+            event.preventDefault()
+            event.stopPropagation()
+            handlePlayerActivity()
+            onPrev()
+            return
+        }
+
+        if (event.key === 'ArrowRight' || normalizedKey === 'd') {
+            event.preventDefault()
+            event.stopPropagation()
+            handlePlayerActivity()
+            onNext()
+        }
+    }, [handlePlayerActivity, isFullscreen, onNext, onPrev])
+
     const renderToolbar = () => (
         <div className="preview-toolbar">
-            <div className="preview-toolbar-main">
-                <div className="preview-title-row">
-                    <span className="toolbar-title">Preview</span>
-                    <span className={`preview-source-badge ${previewSource === 'queue' ? 'is-queue' : 'is-files'}`}>
-                        {previewSourceLabel}
+                <div className="preview-toolbar-main">
+                    <div className="preview-title-row">
+                        <span className="toolbar-title">Preview</span>
+                        <span className={`preview-source-badge ${previewSource === 'queue' ? 'is-queue' : 'is-files'}`}>
+                            {previewSourceLabel}
                     </span>
                     {navTotal > 0 && (
                         <span className="nav-counter">{navIndex + 1} / {navTotal}</span>
                     )}
+                    </div>
+                    <p className="preview-toolbar-hint">
+                        Arrow keys target <strong>{navigationLabel}</strong> · Fullscreen player accepts <strong>← / → / A / D</strong>
+                    </p>
                 </div>
-                <p className="preview-toolbar-hint">
-                    Arrow keys target <strong>{navigationLabel}</strong>
-                </p>
-            </div>
 
             <div className="preview-toolbar-actions">
                 <label className={`autoplay-toggle ${autoPlayNext ? 'enabled' : ''}`} title="Auto-play next preview item">
@@ -406,7 +533,15 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
             {renderToolbar()}
 
             <div className="preview-content">
-                <div className={`media-container type-${fileType}`} ref={playerShellRef}>
+                <div
+                    className={`media-container type-${fileType} ${isFullscreen ? 'is-fullscreen' : ''}`}
+                    ref={playerShellRef}
+                    tabIndex={0}
+                    onPointerMove={handlePlayerActivity}
+                    onPointerDown={handlePlayerActivity}
+                    onFocusCapture={handlePlayerActivity}
+                    onKeyDownCapture={handlePlayerShellKeyDown}
+                >
                     <button
                         type="button"
                         className="player-nav-zone is-prev"
@@ -423,7 +558,7 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
                         {isPlayableMedia && !error && (
                             <button
                                 type="button"
-                                className={`player-center-control ${isPlaying ? 'is-playing' : ''}`}
+                                className={`player-center-control ${isPlaying ? 'is-playing' : ''} ${isCenterControlVisible ? '' : 'is-hidden'}`.trim()}
                                 onClick={togglePlayback}
                                 aria-label={isPlaying ? 'Pause preview playback' : 'Play preview playback'}
                                 title={isPlaying ? 'Pause' : 'Play'}
@@ -463,7 +598,7 @@ export const VideoPreview: FC<VideoPreviewProps> = ({
                                     {isPlaying ? '⏸ Pause' : '▶ Play'}
                                 </button>
                             ) : (
-                                <span className="player-static-label">Image preview</span>
+                                <span className="player-static-label">{isAnimatedImage ? 'Image sequence' : 'Image preview'}</span>
                             )}
 
                             <button

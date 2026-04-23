@@ -118,10 +118,12 @@ export const FileList: FC<FileListProps> = ({
     const containerRef = useRef<HTMLDivElement>(null)
     const [containerHeight, setContainerHeight] = useState(600)
     const [showActions, setShowActions] = useState(false)
+    const canUseVirtualList = viewMode === 'list' && containerHeight >= ITEM_HEIGHT * 2
 
     // Measure container height
     useEffect(() => {
         if (!containerRef.current) return
+        setContainerHeight(containerRef.current.getBoundingClientRect().height)
         const observer = new ResizeObserver(entries => {
             for (const entry of entries) {
                 setContainerHeight(entry.contentRect.height)
@@ -153,6 +155,39 @@ export const FileList: FC<FileListProps> = ({
         selectedFiles,
         onSelectFile,
     }
+
+    const renderPlainList = () => (
+        <ul className="file-list mode-list mode-list-fallback">
+            {files.map((file) => {
+                const isActive = selectedFile?.path === file.path
+                const isQueued = selectedFiles.some((f) => f.path === file.path)
+
+                return (
+                    <li key={file.path}>
+                        <div
+                            className={`file-item ${isActive ? 'active' : ''} ${isQueued ? 'queued' : ''} file-type-${file.type}`}
+                            onClick={(e) => onSelectFile(file, e)}
+                            tabIndex={0}
+                            data-filename={file.name}
+                        >
+                            <div className="file-icon-wrapper">
+                                <span className="file-icon">{TYPE_ICONS[file.type] || '📄'}</span>
+                            </div>
+                            <div className="file-info">
+                                <span className="file-name" title={file.name}>{getFileName(file.name)}</span>
+                                <span className="file-path">{file.name}</span>
+                            </div>
+                            <div className="file-meta">
+                                <span className="file-size">{formatSize(file.size)}</span>
+                                <span className={`file-type-badge type-${file.type}`}>{file.type}</span>
+                            </div>
+                            {isQueued && <span className="queue-indicator">●</span>}
+                        </div>
+                    </li>
+                )
+            })}
+        </ul>
+    )
 
     if (!hasArchive) {
         return (
@@ -250,7 +285,7 @@ export const FileList: FC<FileListProps> = ({
                             <span className="actions-status-hint">
                                 {selectedFiles.length > 0
                                     ? 'Ctrl+Click or Shift+Click to refine, then queue or extract in one step.'
-                                    : 'Open the compact action tray for queue, extract, and shortcut help.'}
+                                    : 'Use the action tray for queue, extract, and shortcut help.'}
                             </span>
                         </div>
 
@@ -314,7 +349,7 @@ export const FileList: FC<FileListProps> = ({
                         <span className="empty-icon-large">🔍</span>
                         <p>No files match the current filter</p>
                     </div>
-                ) : viewMode === 'list' ? (
+                ) : canUseVirtualList ? (
                     <VList
                         ref={listRef}
                         height={containerHeight}
@@ -327,6 +362,8 @@ export const FileList: FC<FileListProps> = ({
                     >
                         {FileRow}
                     </VList>
+                ) : viewMode === 'list' ? (
+                    renderPlainList()
                 ) : (
                     /* Grid view — show first 200 for perf */
                     <ul className="file-list mode-grid">

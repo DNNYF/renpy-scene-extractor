@@ -1,4 +1,4 @@
-import { FC, useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { FC, useState, useRef, useCallback, useEffect, useMemo, type SetStateAction } from 'react'
 import { buildLocalFileUrl, measureMediaSourceDuration, TIMELINE_TRACK_LABEL_WIDTH } from './mediaUtils'
 
 /* ===================================================
@@ -16,6 +16,8 @@ export interface TimelineSourceClip {
     file: RpaFile
     path: string
     sourceDuration?: number
+    displayDuration?: number
+    sourceQueueKey?: string
 }
 
 export interface TimelineClip {
@@ -27,6 +29,7 @@ export interface TimelineClip {
     startTime: number  // seconds offset on timeline
     duration: number   // source duration for audio/video, display duration for images
     sourceDuration?: number
+    sourceQueueKey?: string
     trimStart: number  // trim from beginning (seconds)
     trimEnd: number    // trim from end (seconds)
 }
@@ -36,7 +39,7 @@ export interface TimelineExportProject {
     totalDuration: number
 }
 
-interface Track {
+export interface Track {
     id: string
     type: 'video' | 'audio'
     label: string
@@ -45,7 +48,9 @@ interface Track {
 
 interface TimelineEditorProps {
     initialClips: TimelineSourceClip[]
+    initialTracks?: Track[] | null
     onBack: () => void
+    onTracksChange?: (tracks: Track[]) => void
     onExport?: (project: TimelineExportProject) => Promise<{
         success: boolean
         canceled?: boolean
@@ -104,10 +109,112 @@ function getClipEnd(clip: TimelineClip): number {
     return clip.startTime + getEffectiveDuration(clip)
 }
 
-function createTimelineClip(item: TimelineSourceClip, startTime: number): TimelineClip {
+function getAudioTrackNumber(trackId: string): number {
+    const match = trackId.match(/^audio-(\d+)$/)
+    return match ? Number(match[1]) : 1
+}
+
+function createAudioTrack(trackNumber: number): Track {
+    return {
+        id: `audio-${trackNumber}`,
+        type: 'audio',
+        label: `Audio ${trackNumber}`,
+        clips: [],
+    }
+}
+
+function sortTracks(tracks: Track[]): Track[] {
+    const videoTracks = tracks.filter((track) => track.type === 'video')
+    const audioTracks = tracks
+        .filter((track) => track.type === 'audio')
+        .sort((a, b) => getAudioTrackNumber(a.id) - getAudioTrackNumber(b.id))
+
+    return [...videoTracks, ...audioTracks]
+}
+
+function ensureAudioTrackExists(tracks: Track[], trackId: string): Track[] {
+    if (!trackId.startsWith('audio-') || tracks.some((track) => track.id === trackId)) {
+        return tracks
+    }
+
+    const trackNumber = getAudioTrackNumber(trackId)
+    const nextTracks = [...tracks]
+
+    for (let index = 1; index <= trackNumber; index += 1) {
+        const audioTrackId = `audio-${index}`
+        if (!nextTracks.some((track) => track.id === audioTrackId)) {
+            nextTracks.push(createAudioTrack(index))
+        }
+    }
+
+    return sortTracks(nextTracks)
+}
+
+function hasTrackCollision(track: Track, clipId: string, newStart: number, effectiveDur: number): boolean {
+    const newEnd = newStart + effectiveDur
+    const epsilon = 0.01
+
+    return track.clips
+        .filter((clip) => clip.id !== clipId)
+        .some((other) => {
+            const otherEnd = getClipEnd(other)
+            return (newStart < otherEnd - epsilon) && (newEnd > other.startTime + epsilon)
+        })
+}
+
+function moveClipToTrackAtTime(tracks: Track[], clipId: string, targetTrackId: string, startTime: number): Track[] {
+    let movingClip: TimelineClip | null = null
+
+    const tracksWithTarget = ensureAudioTrackExists(tracks, targetTrackId)
+    const nextTracks = tracksWithTarget.map((track) => {
+        const remainingClips = track.clips.filter((clip) => {
+            if (clip.id === clipId) {
+                movingClip = clip
+                return false
+            }
+            return true
+        })
+
+        if (remainingClips.length === track.clips.length) {
+            return track
+        }
+
+        return {
+            ...track,
+            clips: track.type === 'video' ? compactTrackClips({ ...track, clips: remainingClips }).clips : remainingClips,
+        }
+    })
+
+    if (!movingClip) {
+        return tracks
+    }
+
+    const resolvedMovingClip: TimelineClip = movingClip
+
+    const withInserted = nextTracks.map((track) => {
+        if (track.id !== targetTrackId) {
+            return track
+        }
+
+        const insertedClip: TimelineClip = {
+            ...resolvedMovingClip,
+            trackId: targetTrackId,
+            startTime,
+        }
+
+        return {
+            ...track,
+            clips: [...track.clips, insertedClip].sort((a, b) => a.startTime - b.startTime),
+        }
+    })
+
+    return sortTracks(withInserted)
+}
+
+export function createTimelineClip(item: TimelineSourceClip, startTime: number): TimelineClip {
     const sourceDuration = item.file.type === 'image' ? undefined : item.sourceDuration
     const baseDuration = item.file.type === 'image'
-        ? DEFAULT_IMG_DURATION
+        ? item.displayDuration ?? DEFAULT_IMG_DURATION
         : sourceDuration ?? MIN_CLIP_DURATION
 
     return {
@@ -119,9 +226,66 @@ function createTimelineClip(item: TimelineSourceClip, startTime: number): Timeli
         startTime,
         duration: baseDuration,
         sourceDuration,
+        sourceQueueKey: item.sourceQueueKey,
         trimStart: 0,
         trimEnd: 0,
     }
+}
+
+export function createTracksFromSourceClips(initialClips: TimelineSourceClip[]): Track[] {
+    const videoClips: TimelineClip[] = []
+    const audioClips: TimelineClip[] = []
+    let videoOffset = 0
+    let audioOffset = 0
+
+    for (const item of initialClips) {
+        const clip = createTimelineClip(item, item.file.type === 'audio' ? audioOffset : videoOffset)
+        if (item.file.type === 'audio') {
+            clip.trackId = 'audio-1'
+            audioClips.push(clip)
+            audioOffset += getEffectiveDuration(clip)
+        } else {
+            clip.trackId = 'video-1'
+            videoClips.push(clip)
+            videoOffset += getEffectiveDuration(clip)
+        }
+    }
+
+    return [
+        { id: 'video-1', type: 'video', label: 'Video', clips: videoClips },
+        { id: 'audio-1', type: 'audio', label: 'Audio 1', clips: audioClips },
+    ]
+}
+
+export function appendSourceClipsToTracks(currentTracks: Track[], sourceClips: TimelineSourceClip[]): Track[] {
+    if (sourceClips.length === 0) {
+        return currentTracks
+    }
+
+    const nextTracks = currentTracks.map((track) => ({
+        ...track,
+        clips: [...track.clips],
+    }))
+
+    const trackById = new Map(nextTracks.map((track) => [track.id, track]))
+    const trackEndById = new Map(nextTracks.map((track) => [
+        track.id,
+        track.clips.reduce((max, clip) => Math.max(max, getClipEnd(clip)), 0),
+    ]))
+
+    for (const item of sourceClips) {
+        const targetTrackId = item.file.type === 'audio' ? 'audio-1' : 'video-1'
+        const targetTrack = trackById.get(targetTrackId)
+        if (!targetTrack) continue
+
+        const startTime = trackEndById.get(targetTrackId) ?? 0
+        const clip = createTimelineClip(item, startTime)
+        clip.trackId = targetTrackId
+        targetTrack.clips.push(clip)
+        trackEndById.set(targetTrackId, startTime + getEffectiveDuration(clip))
+    }
+
+    return nextTracks
 }
 
 function compactTrackClips(track: Track): Track {
@@ -217,59 +381,74 @@ function reorderClipOnTrack(track: Track, clipId: string, direction: -1 | 1): Tr
    TimelineEditor — Main Container
    =================================================== */
 
-export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, onExport }) => {
+export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, initialTracks = null, onBack, onTracksChange, onExport }) => {
     // --- State ---
-    const [tracks, setTracks] = useState<Track[]>(() => {
-        // Create initial tracks from queue items
-        const videoClips: TimelineClip[] = []
-        const audioClips: TimelineClip[] = []
-        let videoOffset = 0
-        let audioOffset = 0
-
-        for (const item of initialClips) {
-            const clip = createTimelineClip(item, item.file.type === 'audio' ? audioOffset : videoOffset)
-            if (item.file.type === 'audio') {
-                clip.trackId = 'audio-1'
-                audioClips.push(clip)
-                audioOffset += getEffectiveDuration(clip)
-            } else {
-                clip.trackId = 'video-1'
-                videoClips.push(clip)
-                videoOffset += getEffectiveDuration(clip)
-            }
-        }
-
-        return [
-            { id: 'video-1', type: 'video', label: 'Video 1', clips: videoClips },
-            { id: 'audio-1', type: 'audio', label: 'Audio 1', clips: audioClips },
-        ]
-    })
+    const [tracks, setTracks] = useState<Track[]>(() => initialTracks ?? createTracksFromSourceClips(initialClips))
 
     const [playheadTime, setPlayheadTime] = useState(0)
     const [isPlaying, setIsPlaying] = useState(false)
     const [zoom, setZoom] = useState(50) // px per second
     const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
+    const [selectedClipIds, setSelectedClipIds] = useState<string[]>([])
+    const [selectionAnchorClipId, setSelectionAnchorClipId] = useState<string | null>(null)
     const [isExporting, setIsExporting] = useState(false)
     const [exportMessage, setExportMessage] = useState<string | null>(null)
+    const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false)
     const [durationDraft, setDurationDraft] = useState('')
     const [trimStartDraft, setTrimStartDraft] = useState('')
     const [startTimeDraft, setStartTimeDraft] = useState('')
-    const [previewHeight, setPreviewHeight] = useState(208)
+    const [previewHeight, setPreviewHeight] = useState(260)
     const [selectedClipCollapsed, setSelectedClipCollapsed] = useState(false)
 
     // Refs
+    const previewShellRef = useRef<HTMLElement>(null)
     const timelineScrollerRef = useRef<HTMLDivElement>(null)
     const animFrameRef = useRef<number>(0)
     const lastTimeRef = useRef<number>(0)
     const videoRef = useRef<HTMLVideoElement>(null)
-    const audioRef = useRef<HTMLAudioElement>(null)
+    const audioRefs = useRef<Record<string, HTMLAudioElement | null>>({})
+    const latestTracksRef = useRef<Track[]>(tracks)
+
+    useEffect(() => {
+        const handleFullscreenChange = () => {
+            const shell = previewShellRef.current
+            const fullscreenElement = document.fullscreenElement
+            setIsPreviewFullscreen(Boolean(shell && fullscreenElement && (shell === fullscreenElement || shell.contains(fullscreenElement))))
+        }
+
+        document.addEventListener('fullscreenchange', handleFullscreenChange)
+        return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+    }, [])
+
+    const syncTracksDraft = useCallback((nextTracks: Track[]) => {
+        latestTracksRef.current = nextTracks
+        onTracksChange?.(nextTracks)
+    }, [onTracksChange])
+
+    const setTracksWithSync = useCallback((updater: SetStateAction<Track[]>) => {
+        setTracks((prev) => {
+            const nextTracks = typeof updater === 'function'
+                ? (updater as (prevState: Track[]) => Track[])(prev)
+                : updater
+
+            syncTracksDraft(nextTracks)
+            return nextTracks
+        })
+    }, [syncTracksDraft])
 
     const updateClipInTrack = useCallback((clipId: string, updater: (clip: TimelineClip) => TimelineClip) => {
-        setTracks(prev => prev.map(track => ({
+        setTracksWithSync(prev => prev.map(track => ({
             ...track,
             clips: track.clips.map(clip => clip.id === clipId ? updater(clip) : clip),
         })))
-    }, [])
+    }, [setTracksWithSync])
+
+    useEffect(() => {
+        if (initialTracks) {
+            latestTracksRef.current = initialTracks
+            setTracks(initialTracks)
+        }
+    }, [initialTracks])
 
     // --- Derived ---
     const totalDuration = useMemo(() => {
@@ -300,10 +479,21 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
     }, [tracks, playheadTime])
 
     const activeVideoClip = getActiveClip('video')
-    const activeAudioClip = getActiveClip('audio')
+    const activeAudioClips = useMemo(
+        () => tracks.flatMap((track) => {
+            if (track.type !== 'audio') return []
+            return track.clips.filter((clip) => playheadTime >= clip.startTime && playheadTime < getClipEnd(clip))
+        }),
+        [tracks, playheadTime]
+    )
     const selectedClip = useMemo(
         () => tracks.flatMap(track => track.clips).find(clip => clip.id === selectedClipId) ?? null,
         [tracks, selectedClipId]
+    )
+    const selectedClipIdSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds])
+    const totalImageClipCount = useMemo(
+        () => tracks.reduce((count, track) => count + track.clips.filter((clip) => clip.fileType === 'image').length, 0),
+        [tracks]
     )
 
     useEffect(() => {
@@ -385,6 +575,52 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
         return { prevEnd, nextStart }
     }, [])
 
+    const selectSingleClip = useCallback((clipId: string) => {
+        setSelectedClipId(clipId)
+        setSelectedClipIds([clipId])
+        setSelectionAnchorClipId(clipId)
+    }, [])
+
+    const selectClipRange = useCallback((clipId: string, extendSelection: boolean) => {
+        if (!extendSelection) {
+            selectSingleClip(clipId)
+            return
+        }
+
+        const targetLocated = getTrackForClip(clipId)
+        const anchorId = selectionAnchorClipId
+        const anchorLocated = anchorId ? getTrackForClip(anchorId) : null
+
+        if (
+            !targetLocated
+            || !anchorLocated
+            || targetLocated.track.id !== anchorLocated.track.id
+            || targetLocated.clip.fileType !== 'image'
+            || anchorLocated.clip.fileType !== 'image'
+        ) {
+            selectSingleClip(clipId)
+            return
+        }
+
+        const sortedImageClips = [...targetLocated.track.clips]
+            .filter((clip) => clip.fileType === 'image')
+            .sort((a, b) => a.startTime - b.startTime)
+        const anchorIndex = sortedImageClips.findIndex((clip) => clip.id === anchorLocated.clip.id)
+        const targetIndex = sortedImageClips.findIndex((clip) => clip.id === targetLocated.clip.id)
+
+        if (anchorIndex === -1 || targetIndex === -1) {
+            selectSingleClip(clipId)
+            return
+        }
+
+        const startIndex = Math.min(anchorIndex, targetIndex)
+        const endIndex = Math.max(anchorIndex, targetIndex)
+        const rangeIds = sortedImageClips.slice(startIndex, endIndex + 1).map((clip) => clip.id)
+
+        setSelectedClipId(clipId)
+        setSelectedClipIds(rangeIds)
+    }, [getTrackForClip, selectSingleClip, selectionAnchorClipId])
+
     const updateClipStartTime = useCallback((clipId: string, requestedStart: number) => {
         const located = getTrackForClip(clipId)
         if (!located) return
@@ -410,14 +646,14 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
     const reorderSelectedClip = useCallback((direction: -1 | 1) => {
         if (!selectedClipId) return
 
-        setTracks(prev => prev.map((track) => {
+        setTracksWithSync(prev => prev.map((track) => {
             if (!track.clips.some((clip) => clip.id === selectedClipId)) {
                 return track
             }
 
             return reorderClipOnTrack(track, selectedClipId, direction)
         }))
-    }, [selectedClipId])
+    }, [selectedClipId, setTracksWithSync])
 
     const selectedClipReorderState = useMemo(() => {
         if (!selectedClipId) {
@@ -469,6 +705,26 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
             setIsExporting(false)
         }
     }, [isExporting, onExport, totalDuration, tracks])
+
+    const togglePreviewFullscreen = useCallback(async () => {
+        const shell = previewShellRef.current
+        if (!shell) return
+
+        try {
+            if (document.fullscreenElement) {
+                await document.exitFullscreen()
+            } else {
+                await shell.requestFullscreen()
+            }
+        } catch (error) {
+            console.error('Failed to toggle timeline preview fullscreen', error)
+        }
+    }, [])
+
+    const handleBack = useCallback(() => {
+        syncTracksDraft(latestTracksRef.current)
+        onBack()
+    }, [onBack, syncTracksDraft])
 
     const updateClipTrimStart = useCallback((clipId: string, requestedTrimStart: number) => {
         const located = getTrackForClip(clipId)
@@ -522,6 +778,25 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
 
         updateClipInTrack(clipId, currentClip => ({ ...currentClip, trimEnd }))
     }, [getClipNeighborBounds, getTrackForClip, updateClipInTrack])
+
+    const updateAllImageClipLengths = useCallback((requestedLength: number) => {
+        const nextDuration = Math.max(MIN_CLIP_DURATION, requestedLength)
+
+        setTracksWithSync(prev => prev.map((track) => {
+            if (!track.clips.some((clip) => clip.fileType === 'image')) {
+                return track
+            }
+
+            const nextTrack: Track = {
+                ...track,
+                clips: track.clips.map((clip) => clip.fileType === 'image'
+                    ? { ...clip, duration: nextDuration }
+                    : clip),
+            }
+
+            return track.type === 'video' ? compactTrackClips(nextTrack) : nextTrack
+        }))
+    }, [setTracksWithSync])
 
     // --- Playback ---
     const startPlayback = useCallback(() => {
@@ -591,44 +866,107 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
     }, [activeVideoClip, playheadTime, isPlaying])
 
     useEffect(() => {
-        if (audioRef.current && activeAudioClip) {
-            const clipTime = playheadTime - activeAudioClip.startTime + activeAudioClip.trimStart
-            if (Math.abs(audioRef.current.currentTime - clipTime) > 0.5) {
-                audioRef.current.currentTime = clipTime
+        const activeAudioIds = new Set(activeAudioClips.map((clip) => clip.id))
+
+        Object.entries(audioRefs.current).forEach(([clipId, element]) => {
+            if (!element) return
+
+            if (!activeAudioIds.has(clipId)) {
+                element.pause()
+                return
             }
-            if (isPlaying && audioRef.current.paused) {
-                audioRef.current.play().catch(() => { })
-            } else if (!isPlaying && !audioRef.current.paused) {
-                audioRef.current.pause()
+
+            const clip = activeAudioClips.find((entry) => entry.id === clipId)
+            if (!clip) return
+
+            const clipTime = playheadTime - clip.startTime + clip.trimStart
+            if (Math.abs(element.currentTime - clipTime) > 0.5) {
+                element.currentTime = clipTime
             }
-        }
-    }, [activeAudioClip, playheadTime, isPlaying])
+
+            if (isPlaying && element.paused) {
+                element.play().catch(() => { })
+            } else if (!isPlaying && !element.paused) {
+                element.pause()
+            }
+        })
+    }, [activeAudioClips, isPlaying, playheadTime])
 
     // --- Track/Clip Operations ---
     const deleteClip = useCallback((clipId: string) => {
-        setTracks(prev => prev.map(track => {
+        setTracksWithSync(prev => prev.map(track => {
             const remainingClips = track.clips.filter(c => c.id !== clipId)
             if (remainingClips.length === track.clips.length) {
                 return track
             }
 
-            return compactTrackClips({
-                ...track,
-                clips: remainingClips,
-            })
+            return track.type === 'video'
+                ? compactTrackClips({
+                    ...track,
+                    clips: remainingClips,
+                })
+                : {
+                    ...track,
+                    clips: remainingClips,
+                }
         }))
-        if (selectedClipId === clipId) setSelectedClipId(null)
-    }, [selectedClipId])
+        if (selectedClipId === clipId) {
+            setSelectedClipId(null)
+            setSelectedClipIds([])
+            setSelectionAnchorClipId(null)
+        }
+    }, [selectedClipId, setTracksWithSync])
 
     const closeTrackGaps = useCallback(() => {
-        setTracks(prev => prev.map(track => compactTrackClips(track)))
-    }, [])
+        setTracksWithSync(prev => prev.map(track => track.type === 'video' ? compactTrackClips(track) : track))
+    }, [setTracksWithSync])
 
     const duplicateSelectedClip = useCallback(() => {
         if (!selectedClipId) return
 
+        const selectedRangeIds = selectedClipIds.filter((id) => id !== selectedClipId ? selectedClipIdSet.has(id) : true)
+        const located = getTrackForClip(selectedClipId)
+
+        if (located && selectedRangeIds.length > 1 && located.clip.fileType === 'image') {
+            const trackId = located.track.id
+            let duplicatedIds: string[] = []
+
+            setTracksWithSync(prev => prev.map((track) => {
+                if (track.id !== trackId) {
+                    return track
+                }
+
+                const sortedClips = [...track.clips].sort((a, b) => a.startTime - b.startTime)
+                const selectedClips = sortedClips.filter((clip) => selectedClipIdSet.has(clip.id))
+
+                if (selectedClips.length <= 1) {
+                    return track
+                }
+
+                const insertionStart = getClipEnd(selectedClips[selectedClips.length - 1])
+                duplicatedIds = selectedClips.map(() => generateClipId())
+                const duplicatedClips = selectedClips.map((clip, index) => ({
+                    ...clip,
+                    id: duplicatedIds[index],
+                    startTime: insertionStart + (clip.startTime - selectedClips[0].startTime),
+                }))
+
+                return {
+                    ...track,
+                    clips: [...track.clips, ...duplicatedClips].sort((a, b) => a.startTime - b.startTime),
+                }
+            }))
+
+            if (duplicatedIds.length > 0) {
+                setSelectedClipId(duplicatedIds[duplicatedIds.length - 1])
+                setSelectedClipIds(duplicatedIds)
+                setSelectionAnchorClipId(duplicatedIds[0])
+            }
+            return
+        }
+
         let duplicatedId: string | null = null
-        setTracks(prev => prev.map(track => {
+        setTracksWithSync(prev => prev.map(track => {
             if (!track.clips.some((clip) => clip.id === selectedClipId)) {
                 return track
             }
@@ -640,15 +978,17 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
 
         if (duplicatedId) {
             setSelectedClipId(duplicatedId)
+            setSelectedClipIds([duplicatedId])
+            setSelectionAnchorClipId(duplicatedId)
         }
-    }, [selectedClipId])
+    }, [getTrackForClip, selectedClipId, selectedClipIdSet, selectedClipIds, setTracksWithSync])
 
     const splitClipAtPlayhead = useCallback(() => {
         if (!selectedClipId) return
 
         let nextSelectedClipId: string | null = selectedClipId
 
-        setTracks(prev => {
+        setTracksWithSync(prev => {
             const newTracks: Track[] = []
             for (const track of prev) {
                 const clipIndex = track.clips.findIndex(c => c.id === selectedClipId)
@@ -706,7 +1046,9 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
         })
 
         setSelectedClipId(nextSelectedClipId)
-    }, [selectedClipId, playheadTime])
+        setSelectedClipIds(nextSelectedClipId ? [nextSelectedClipId] : [])
+        setSelectionAnchorClipId(nextSelectedClipId)
+    }, [selectedClipId, playheadTime, setTracksWithSync])
 
     const addExternalMedia = useCallback(async () => {
         try {
@@ -740,13 +1082,13 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                 trimEnd: 0,
             }
 
-            setTracks(prev => prev.map(t =>
+            setTracksWithSync(prev => prev.map(t =>
                 t.id === trackId ? { ...t, clips: [...t.clips, newClip] } : t
             ))
         } catch (e) {
             console.error('Failed to import media:', e)
         }
-    }, [tracks])
+    }, [setTracksWithSync, tracks])
 
     // --- Click timeline to set playhead ---
     const handleTimelineClick = useCallback((e: React.MouseEvent) => {
@@ -813,7 +1155,11 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
     // --- Clip drag (reposition) ---
     const handleClipDragStart = useCallback((clipId: string, e: React.MouseEvent) => {
         e.stopPropagation()
-        setSelectedClipId(clipId)
+        if (e.shiftKey) {
+            return
+        }
+
+        selectSingleClip(clipId)
 
         const startX = e.clientX
         let clip: TimelineClip | null = null
@@ -831,9 +1177,8 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
 
         const origStart = clip.startTime
         const effectiveDur = getEffectiveDuration(clip)
-
-        // Get all other clips in this track to check collisions
-        const otherClips = track.clips.filter(c => c.id !== clipId)
+        const trackRows = Array.from(timelineScrollerRef.current?.querySelectorAll<HTMLElement>('.timeline-track') ?? [])
+        const firstAudioTrackIndex = tracks.findIndex((entry) => entry.type === 'audio')
 
         const onMove = (ev: MouseEvent) => {
             const dx = ev.clientX - startX
@@ -848,19 +1193,34 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
             // Boundary check (>= 0)
             if (newStart < 0) newStart = 0
 
-            // Collision check: Does [newStart, newStart + effectiveDur] overlap ANY other clip?
-            const newEnd = newStart + effectiveDur
-            const epsilon = 0.01
+            let targetTrackId = clip!.trackId
+            if (clip!.fileType === 'audio' && firstAudioTrackIndex !== -1) {
+                const hoveredTrackIndex = trackRows.findIndex((row) => {
+                    const rect = row.getBoundingClientRect()
+                    return ev.clientY >= rect.top && ev.clientY <= rect.bottom
+                })
 
-            const hasCollision = otherClips.some(other => {
-                const otherEffEnd = getClipEnd(other)
-                const otherStart = other.startTime
-                return (newStart < otherEffEnd - epsilon) && (newEnd > otherStart + epsilon)
-            })
+                if (hoveredTrackIndex >= firstAudioTrackIndex && hoveredTrackIndex < tracks.length) {
+                    const hoveredTrack = tracks[hoveredTrackIndex]
+                    if (hoveredTrack.type === 'audio') {
+                        targetTrackId = hoveredTrack.id
+                    }
+                } else if (trackRows.length > 0 && ev.clientY > trackRows[trackRows.length - 1].getBoundingClientRect().bottom) {
+                    const currentAudioTrackCount = tracks.filter((entry) => entry.type === 'audio').length
+                    targetTrackId = `audio-${currentAudioTrackCount + 1}`
+                }
+            }
 
-            if (!hasCollision) {
-                if (Math.abs(newStart - clip!.startTime) > 0.001) {
-                    updateClipInTrack(clipId, c => ({ ...c, startTime: newStart }))
+            const nextTracks = ensureAudioTrackExists(tracks, targetTrackId)
+            const targetTrack = nextTracks.find((entry) => entry.id === targetTrackId) ?? track
+
+            if (!hasTrackCollision(targetTrack, clipId, newStart, effectiveDur)) {
+                if (targetTrackId !== clip!.trackId || Math.abs(newStart - clip!.startTime) > 0.001) {
+                    if (targetTrackId !== clip!.trackId) {
+                        setTracksWithSync(prev => moveClipToTrackAtTime(prev, clipId, targetTrackId, newStart))
+                    } else {
+                        updateClipInTrack(clipId, c => ({ ...c, startTime: newStart }))
+                    }
                 }
             }
         }
@@ -872,7 +1232,7 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
 
         document.addEventListener('mousemove', onMove)
         document.addEventListener('mouseup', onUp)
-    }, [tracks, zoom, updateClipInTrack])
+    }, [selectSingleClip, setTracksWithSync, tracks, updateClipInTrack, zoom])
 
     // --- Clip edge drag (trim) ---
     const handleEdgeDrag = useCallback((clipId: string, edge: 'left' | 'right', e: React.MouseEvent) => {
@@ -1036,7 +1396,7 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
             {/* Toolbar */}
             <div className="timeline-toolbar">
                 <div className="toolbar-left">
-                    <button className="btn btn-secondary btn-sm" onClick={onBack}>← Back</button>
+                    <button className="btn btn-secondary btn-sm" onClick={handleBack}>← Back</button>
                     <span className="toolbar-divider" />
                     <button className="btn btn-accent btn-sm" onClick={togglePlayback}>
                         {isPlaying ? '⏸ Pause' : '▶ Play'}
@@ -1048,6 +1408,18 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                 </div>
 
                     <div className="toolbar-actions">
+                    <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => reorderSelectedClip(-1)}
+                        disabled={!selectedClipReorderState.canMoveEarlier}
+                        title="Swap selected clip earlier in track order (Alt+←)"
+                    >← Earlier</button>
+                    <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => reorderSelectedClip(1)}
+                        disabled={!selectedClipReorderState.canMoveLater}
+                        title="Swap selected clip later in track order (Alt+→)"
+                    >Later →</button>
                         <button
                             className="btn btn-secondary btn-sm"
                         onClick={splitClipAtPlayhead}
@@ -1064,13 +1436,13 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                         className="btn btn-secondary btn-sm"
                         onClick={duplicateSelectedClip}
                         disabled={!selectedClipId}
-                        title="Duplicate selected clip (D)"
+                        title="Duplicate selected clip or selected image range (D)"
                     >⧉ Duplicate</button>
                     <button
                         className="btn btn-secondary btn-sm"
                         onClick={closeTrackGaps}
-                        disabled={tracks.every((track) => track.clips.length < 2)}
-                        title="Shift clips left to fill empty gaps"
+                        disabled={tracks.filter((track) => track.type === 'video').every((track) => track.clips.length < 2)}
+                        title="Shift video/image clips left to fill empty gaps"
                     >⇤ Close Gaps</button>
                     <button className="btn btn-secondary btn-sm" onClick={addExternalMedia}>
                         📎 Add Media
@@ -1093,6 +1465,11 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                             <span className="timeline-toolbar-note">No export backend connected yet.</span>
                         </div>
                     )}
+                    <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={togglePreviewFullscreen}
+                        title={isPreviewFullscreen ? 'Exit preview fullscreen' : 'Enter preview fullscreen'}
+                    >{isPreviewFullscreen ? '🡼 Window' : '⛶ Fullscreen'}</button>
                     <span className="toolbar-divider" />
                         <label className="zoom-control">
                             🔍
@@ -1187,7 +1564,7 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                                 className="timeline-field-input"
                                 type="number"
                                 min={MIN_CLIP_DURATION}
-                                step="0.05"
+                                step={selectedClip.fileType === 'image' ? '0.01' : '0.05'}
                                 value={durationDraft}
                                 onChange={(e) => setDurationDraft(e.target.value)}
                                 onBlur={() => {
@@ -1200,6 +1577,29 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                                 }}
                             />
                         </label>
+
+                        {selectedClip.fileType === 'image' && (
+                            <div className="timeline-field timeline-field-readonly">
+                                <span className="timeline-field-label">Bulk apply</span>
+                                <div className="timeline-field-value">
+                                    <button
+                                        type="button"
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={() => {
+                                            const parsed = Number(durationDraft)
+                                            if (!Number.isFinite(parsed)) {
+                                                setDurationDraft(getEffectiveDuration(selectedClip).toFixed(2))
+                                                return
+                                            }
+
+                                            updateAllImageClipLengths(parsed)
+                                        }}
+                                    >
+                                        Apply to all image clips ({totalImageClipCount})
+                                    </button>
+                                </div>
+                            </div>
+                        )}
 
                         <div className="timeline-field timeline-field-readonly">
                             <span className="timeline-field-label">Source limit</span>
@@ -1219,40 +1619,11 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
             </div>
 
             <div className="timeline-workspace">
-                <section className="timeline-preview-shell" style={{ height: previewHeight }}>
-                    <div className="timeline-preview-header">
-                        <div>
-                            <p className="timeline-preview-eyebrow">Program monitor</p>
-                            <h3 className="timeline-preview-title">
-                                {activeVideoClip ? getFileName(activeVideoClip.fileName) : 'Timeline Preview'}
-                            </h3>
-                        </div>
-                        <div className="timeline-preview-toolbar">
-                            <div className="timeline-move-controls">
-                                <span className="timeline-field-label">Track order</span>
-                                <div className="timeline-move-buttons">
-                                    <button
-                                        className="btn btn-secondary btn-sm"
-                                        onClick={() => reorderSelectedClip(-1)}
-                                        disabled={!selectedClipReorderState.canMoveEarlier}
-                                        title="Swap selected clip earlier in track order (Alt+←)"
-                                    >
-                                        ← Earlier
-                                    </button>
-                                    <button
-                                        className="btn btn-secondary btn-sm"
-                                        onClick={() => reorderSelectedClip(1)}
-                                        disabled={!selectedClipReorderState.canMoveLater}
-                                        title="Swap selected clip later in track order (Alt+→)"
-                                    >
-                                        Later →
-                                    </button>
-                                </div>
-                            </div>
-                            <span className="timeline-preview-hint">Drag the divider below to resize</span>
-                        </div>
-                    </div>
-
+                <section
+                    ref={previewShellRef}
+                    className={`timeline-preview-shell ${isPreviewFullscreen ? 'is-fullscreen' : ''}`}
+                    style={{ height: selectedClipCollapsed ? Math.max(previewHeight, 300) : previewHeight }}
+                >
                     <div className="timeline-preview">
                         <div className="preview-viewport">
                             {activeVideoClip ? (
@@ -1267,7 +1638,7 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                                         ref={videoRef}
                                         src={buildLocalFileUrl(activeVideoClip.filePath)}
                                         className="timeline-preview-media"
-                                        muted={!!activeAudioClip}
+                                        muted={activeAudioClips.length > 0}
                                     />
                                 )
                             ) : (
@@ -1280,9 +1651,19 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                     </div>
                 </section>
 
-                {activeAudioClip && (
-                    <audio ref={audioRef} src={buildLocalFileUrl(activeAudioClip.filePath)} />
-                )}
+                {activeAudioClips.map((clip) => (
+                    <audio
+                        key={clip.id}
+                        ref={(element) => {
+                            if (element) {
+                                audioRefs.current[clip.id] = element
+                            } else {
+                                delete audioRefs.current[clip.id]
+                            }
+                        }}
+                        src={buildLocalFileUrl(clip.filePath)}
+                    />
+                ))}
 
                 <div
                     className="timeline-preview-resize-handle"
@@ -1336,12 +1717,15 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                                     return (
                                         <div
                                             key={clip.id}
-                                            className={`timeline-clip clip-${clip.fileType} ${selectedClipId === clip.id ? 'selected' : ''} ${activeVideoClip?.id === clip.id || activeAudioClip?.id === clip.id ? 'active' : ''}`}
+                                            className={`timeline-clip clip-${clip.fileType} ${selectedClipIdSet.has(clip.id) ? 'selected' : ''} ${activeVideoClip?.id === clip.id || activeAudioClips.some((activeClip) => activeClip.id === clip.id) ? 'active' : ''}`}
                                             style={{
                                                 left: clipLeft,
                                                 width: Math.max(20, clipWidth),
                                             }}
-                                            onClick={(e) => { e.stopPropagation(); setSelectedClipId(clip.id) }}
+                                            onClick={(e) => {
+                                                e.stopPropagation()
+                                                selectClipRange(clip.id, e.shiftKey)
+                                            }}
                                             onMouseDown={(e) => handleClipDragStart(clip.id, e)}
                                             title={`${getFileName(clip.fileName)} · clip ${formatTime(effectiveDur)}${sourceDuration !== undefined ? ` / source ${formatTime(sourceDuration)}` : ''}`}
                                         >
@@ -1397,9 +1781,10 @@ export const TimelineEditor: FC<TimelineEditorProps> = ({ initialClips, onBack, 
                 <span>Duration: {formatTime(totalDuration)}</span>
                 <span>Clips: {tracks.reduce((sum, t) => sum + t.clips.length, 0)}</span>
                 {selectedClip && <span>Selected: {getFileName(selectedClip.fileName)}</span>}
+                {selectedClipIds.length > 1 && <span>Range: {selectedClipIds.length} clips</span>}
                 {selectedClip && <span>Length: {formatTime(getEffectiveDuration(selectedClip))}</span>}
                 <span className="timeline-shortcuts-hint">
-                    Space: Play/Pause · S: Split · D: Duplicate · Alt+←/→: Reorder · Del: Delete
+                    Space: Play/Pause · Shift+Click: Range Select · D: Duplicate · Alt+←/→: Reorder · Del: Delete
                 </span>
             </div>
         </div>

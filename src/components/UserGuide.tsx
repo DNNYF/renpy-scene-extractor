@@ -6,7 +6,7 @@ interface UserGuideProps {
 
 const SHORTCUTS = [
     { key: '↑ / ↓', desc: 'Navigate the last file or queue target (prev / next)' },
-    { key: '← / →', desc: 'Navigate the last file or queue target (prev / next)' },
+    { key: '← / → / A / D', desc: 'Navigate the last file or queue target, including from the fullscreen preview player (prev / next)' },
     { key: 'Q', desc: 'Import all selected files to play queue' },
     { key: '?', desc: 'Toggle this help guide' },
     { key: 'Ctrl+Click', desc: 'Toggle multi-select on a file' },
@@ -22,12 +22,12 @@ const FEATURES = [
     { title: 'File Explorer', desc: 'Browse and preview files inside .rpa archives from Ren\'Py games. Click the tape-logo area in the left sidebar to collapse it into a slimmer rail when you want more workspace.' },
     { title: 'Filters', desc: 'Filter files by type (All / Video / Image / Audio) using the filter buttons.' },
     { title: 'List & Grid View', desc: 'Toggle between list and grid view using the ☰ / ⊞ buttons.' },
-    { title: 'Selection Tray', desc: 'Use the compact action tray at the top of Files to queue selections, extract the current filter, or reveal shortcut help without giving up file list space.' },
+    { title: 'Selection Tray', desc: 'Use the action tray at the top of Files to queue selections, extract the current filter, or reveal shortcut help without giving up file list space.' },
     { title: 'Play Queue', desc: 'Build a custom playlist: Ctrl+Click or Shift+Click files, then press Q or click “Queue Selected” to import them all into the play queue. Reorder by dragging, adjust loop counts inline, and use queue interactions to make arrow keys follow the queue.' },
     { title: 'Auto-Play', desc: 'Enable "Auto" in the preview toolbar to automatically replay queued items until their loop count is exhausted before advancing to the next item.' },
     { title: 'Extract', desc: 'Use “Extract Selected” to download all selected files, “Extract All” to download everything in the current filter tab, or “Extract” in the queue/preview to save the active media.' },
     { title: 'Encryption Key', desc: 'Some archives require a hex key. Click the 🔑 button in the sidebar to enter it.' },
-    { title: 'Timeline Editor', desc: 'Send queued files to the timeline editor for arranging clips, splitting, duplicating with D, swapping the selected clip earlier or later from the monitor toolbar with Alt+← / →, closing gaps automatically after delete, manually shifting clips left with Close Gaps, adding external media, and resizing the preview area above the timeline while keeping it visible.' },
+    { title: 'Timeline Editor', desc: 'Send queued files to the timeline editor for arranging clips, splitting, duplicating with D, swapping the selected clip earlier or later from the top toolbar with Alt+← / →, closing gaps automatically after delete, manually shifting clips left with Close Gaps, adding external media, resizing the preview area above the timeline, and toggling preview fullscreen from the toolbar.' },
 ]
 
 export const UserGuide: FC<UserGuideProps> = ({ onClose }) => {
