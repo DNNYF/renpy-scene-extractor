@@ -1,37 +1,37 @@
 # Ren'Py Scene Extractor
 
-Desktop app untuk browse, preview, extract, queue, edit, dan export media dari game Ren'Py (`.rpa`) dan loose media files.
+Desktop app to browse, preview, extract, queue, edit, and export media from Ren'Py game archives (`.rpa`) and loose media files.
 
 ## Important / Disclaimer
 
-Gunakan tool ini hanya untuk penggunaan yang sah:
+Use this tool only for lawful use:
 
-- proyek milik Anda sendiri,
-- proyek yang Anda punya izin untuk analisis/extract,
-- atau konten yang memang boleh dipakai.
+- your own projects,
+- projects you have permission to analyze/extract,
+- or content that is explicitly allowed.
 
-Repository ini **tidak menyertakan asset game apa pun**.
-Jangan upload hasil extract game pihak ketiga ke repository ini.
+This repository **does not include any game assets**.
+Do not upload extracted assets from third-party games to this repository.
 
 ---
 
 ## Highlights
 
-- Scan folder game Ren'Py dan tampilkan daftar archive `.rpa`
-- Support **RPA-2.0**, **RPA-3.0**, dan **RPA-3.2**
-- Browse **loose media files** di folder game
-- Preview **video / image / audio** langsung dari archive atau file lokal
-- Multi-select file, queue playback, loop per item
-- Timeline editor dengan:
+- Scan Ren'Py game folders and list `.rpa` archives
+- Supports **RPA-2.0**, **RPA-3.0**, and **RPA-3.2**
+- Browse **loose media files** in the game folder
+- Preview **video / image / audio** directly from archives or local files
+- Multi-select files, queue playback, loop per item
+- Timeline editor with:
   - trim
   - split
   - duplicate
   - reorder
-  - close gaps untuk video/image
-  - stacked audio tracks (`Audio 2`, `Audio 3`, dst.)
-  - preview fullscreen
-- Export timeline menjadi **1 file video MP4 final**
-- Bundled FFmpeg support untuk release build
+  - close gaps for video/image
+  - stacked audio tracks (`Audio 2`, `Audio 3`, etc.)
+  - fullscreen preview
+- Export the timeline into **one final MP4 video file**
+- Bundled FFmpeg support for release builds
 
 ---
 
@@ -50,12 +50,12 @@ Jangan upload hasil extract game pihak ketiga ke repository ini.
 ### Main Workspace
 
 - Hideable/collapsible sidebar
-- Archive/game list dengan remove button
-- File browser dengan:
+- Archive/game list with remove button
+- File browser with:
   - search
   - type filter (`All / Video / Image / Audio`)
   - list/grid mode
-- Selection tray untuk:
+- Selection tray for:
   - **Queue Selected**
   - **Extract Selected**
   - **Extract All**
@@ -64,7 +64,7 @@ Jangan upload hasil extract game pihak ketiga ke repository ini.
 ### Preview Panel
 
 - Custom preview player
-- Prev/next scene controls
+- Previous/next scene controls
 - Fullscreen preview support
 - Auto-play next
 - Queue-aware playback
@@ -80,7 +80,7 @@ Jangan upload hasil extract game pihak ketiga ke repository ini.
 ### Timeline Editor
 
 - Separate `Video` track + dynamic audio tracks
-- Drag clips on timeline
+- Drag clips on the timeline
 - Drag edge handles to trim
 - Split at playhead
 - Duplicate selected clip
@@ -124,7 +124,7 @@ Jangan upload hasil extract game pihak ketiga ke repository ini.
 - `aac`
 - `opus`
 
-> Jika audio ada di game tapi tidak muncul di filter Audio, besar kemungkinan file memakai format/ekstensi lain yang belum masuk daftar di atas.
+> If audio exists in the game but does not appear in the Audio filter, it likely uses a format/extension not listed above.
 
 ---
 
@@ -155,10 +155,10 @@ Jangan upload hasil extract game pihak ketiga ke repository ini.
 
 ## Encryption Keys
 
-Beberapa archive Ren'Py terenkripsi.
-Kalau archive gagal dibuka (mis. error zlib / pickle), Anda mungkin perlu memasukkan **hex key**.
+Some Ren'Py archives are encrypted.
+If an archive fails to open (e.g. zlib / pickle error), you may need to enter a **hex key**.
 
-Gunakan hanya key yang memang Anda berhak pakai.
+Use only keys you are authorized to use.
 
 ---
 
@@ -168,7 +168,7 @@ Gunakan hanya key yang memang Anda berhak pakai.
 
 - Node.js
 - npm
-- Python 3 tersedia di PATH sebagai `python`
+- Python 3 available in PATH as `python`
 
 ### Install dependencies
 
@@ -210,71 +210,71 @@ RenPy Scene Extractor-Windows-1.0.0-Setup.exe
 
 ## FFmpeg for Export
 
-Untuk release build, project ini sekarang mendukung **bundled FFmpeg essentials**.
+For release builds, this project now supports **bundled FFmpeg essentials**.
 
-Letakkan file FFmpeg di:
+Place FFmpeg files at:
 
 ```text
 vendor/ffmpeg/bin/ffmpeg.exe
 vendor/ffmpeg/bin/ffprobe.exe
 ```
 
-Builder akan membundelnya ke:
+The builder will bundle them to:
 
 ```text
 resources/ffmpeg/bin/
 ```
 
-Saat runtime:
+At runtime:
 
-1. app akan mencari FFmpeg bundled terlebih dahulu
-2. jika tidak ada, app fallback ke `PATH`
+1. the app will look for bundled FFmpeg first
+2. if not found, the app falls back to `PATH`
 
 ---
 
 ## Export Notes
 
-- Export timeline menghasilkan **1 file MP4 final**, bukan file terpisah.
-- Export backend membutuhkan FFmpeg.
-- Jika FFmpeg tidak ditemukan, app akan menampilkan error yang jelas.
+- Exporting the timeline produces **one final MP4 file**, not separate files.
+- The export backend requires FFmpeg.
+- If FFmpeg is not found, the app will show a clear error.
 
 ---
 
 ## Temp File Behavior
 
-Preview/editor extraction sekarang memakai **session temp directory**, bukan folder temp shared lama yang terus menumpuk.
+Preview/editor extraction now uses a **session temp directory**, not the old shared temp folder that kept growing.
 
-- preview temp dibuat di bawah `%TEMP%/rpa-extractor/session-*`
-- session aktif dibersihkan saat app quit normal
-- startup punya janitor cleanup untuk session orphan yang sudah stale
+- preview temp is created under `%TEMP%/rpa-extractor/session-*`
+- active sessions are cleaned up on normal app quit
+- startup runs a janitor cleanup for stale orphan sessions
 
 ---
 
 ## Troubleshooting
 
-### Audio ada di game tapi tidak muncul di filter Audio
+### Audio exists in the game but does not appear in the Audio filter
 
-Kemungkinan:
+Possible reasons:
 
-- file audio berada di archive lain yang belum dibuka,
-- file itu termasuk loose media tapi belum ter-scan di folder yang dipilih,
-- atau format audio-nya belum termasuk daftar format audio yang didukung tool.
+- the audio file is in another archive that hasn't been opened yet,
+- the file is loose media but hasn't been scanned in the selected folder,
+- or the audio format is not yet included in the supported list.
 
-### Video / audio preview tidak bunyi / tidak jalan
+### Video / audio preview has no sound or does not play
 
-Beberapa format media tidak sepenuhnya kompatibel dengan player Chromium/Electron.
-Kalau file bisa diputar di VLC tapi tidak normal di app, biasanya itu masalah kompatibilitas codec/pixel format.
+Some media formats are not fully compatible with the Chromium/Electron player.
+If a file plays in VLC but not in the app, it is usually a codec/pixel format compatibility issue.
 
-### Export gagal karena FFmpeg tidak ditemukan
+### Export fails because FFmpeg is not found
 
-Pastikan salah satu kondisi ini terpenuhi:
+Make sure one of these conditions is met:
 
-- FFmpeg bundled ada di `vendor/ffmpeg/bin/` sebelum build, atau
-- `ffmpeg` dan `ffprobe` tersedia di `PATH`
+- Bundled FFmpeg exists at `vendor/ffmpeg/bin/` before build, or
+- `ffmpeg` and `ffprobe` are available in `PATH`
 
-### Python tidak ditemukan
+### Python not found
 
-Pastikan `python` bisa dipanggil dari terminal:
+Make sure `python` can be invoked from terminal:
 
 ```bash
 python --version
